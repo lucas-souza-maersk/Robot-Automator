@@ -1,0 +1,13 @@
+{
+    "Teste Edi": {
+        "name": "Teste Edi",
+        "action": "copiar",
+        "source_path": "C:/Users/LDE120/OneDrive - Maersk Group/Documents/TESTROBOEDI/INPUT",
+        "destination_path": "C:/Users/LDE120/OneDrive - Maersk Group/Documents/TESTROBOEDI/OUTPUT",
+        "db_path": "C:/Users/LDE120/OneDrive - Maersk Group/Documents/TESTROBOEDI/db/db_test.db",
+        "log_path": "C:/Users/LDE120/OneDrive - Maersk Group/Documents/TESTROBOEDI/LOGS/log.log",
+        "file_format": "*_depot.edi, Copy.json",
+        "file_age": "Mesmo Dia",
+        "scan_interval": 5
+    }
+}
