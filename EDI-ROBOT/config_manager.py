@@ -15,7 +15,7 @@ def load_profiles():
                 return {}
             return json.loads(content)
     except (json.JSONDecodeError, FileNotFoundError):
-        logging.error(f"Erro ao ler o ficheiro de perfis '{PROFILES_FILE}'. Um novo ficheiro será criado.")
+        logging.error(f"Error reading the profiles file '{PROFILES_FILE}'. A new file will be created.")
         return {}
 
 def save_profiles(profiles):
@@ -23,4 +23,4 @@ def save_profiles(profiles):
         with open(PROFILES_FILE, 'w', encoding='utf-8') as f:
             json.dump(profiles, f, indent=4)
     except Exception as e:
-        logging.error(f"Não foi possível salvar os perfis em '{PROFILES_FILE}': {e}")
+        logging.error(f"Could not save profiles to '{PROFILES_FILE}': {e}")

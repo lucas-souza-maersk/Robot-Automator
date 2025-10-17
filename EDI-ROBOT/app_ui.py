@@ -5,7 +5,7 @@ class AppUI(tk.Tk):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.title("retina gateway service - americas region")
+        self.title("Robot Automator")
         self.geometry("800x600")
 
         self.resizable(False, False)
@@ -45,7 +45,7 @@ class AppUI(tk.Tk):
         about_frame = ttk.Frame(self.notebook, padding="10")
         self.notebook.add(about_frame, text='about')
 
-        about_label = ttk.Label(about_frame, text="retina gateway service v1.0\n\ndeveloped for apm terminals - americas region.")
+        about_label = ttk.Label(about_frame, text="Robot Automator\nVersion 1.0\n© 2024 APM Terminals", justify="center")
         about_label.pack(pady=20)
 
     def update_log_display(self, message):

@@ -3,7 +3,7 @@ import logging
 import os
 
 def initialize_database(db_path):
-    """Inicializa um ficheiro de banco de dados no caminho especificado."""
+    """Initializes a database file at the specified path."""
     try:
         db_dir = os.path.dirname(db_path)
         if db_dir:
@@ -12,8 +12,6 @@ def initialize_database(db_path):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # --- CORREÇÃO CRÍTICA AQUI ---
-        # A query CREATE TABLE que estava em falta foi restaurada.
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS queue (
                 id INTEGER PRIMARY KEY,
@@ -25,18 +23,17 @@ def initialize_database(db_path):
                 processed_at TIMESTAMP
             )
         ''')
-        # --- FIM DA CORREÇÃO ---
 
         conn.commit()
-        logging.info(f"Banco de dados '{os.path.basename(db_path)}' verificado com sucesso.")
+        logging.info(f"Database '{os.path.basename(db_path)}' successfully verified.")
     except Exception as e:
-        logging.error(f"Falha na inicialização do banco de dados '{db_path}': {e}")
+        logging.error(f"Failed to initialize database '{db_path}': {e}")
     finally:
         if conn:
             conn.close()
 
 def get_known_filepaths(db_path):
-    """Retorna um conjunto (set) de todos os file_path já registados no banco especificado."""
+    """Returns a set of all file_paths already registered in the specified database."""
     if not os.path.exists(db_path): return set()
     conn = None
     try:
@@ -46,14 +43,14 @@ def get_known_filepaths(db_path):
         return {row[0] for row in cursor.fetchall()}
     except Exception as e:
         if "no such table" in str(e): return set()
-        logging.error(f"Falha ao buscar caminhos de arquivos conhecidos de '{db_path}': {e}")
+        logging.error(f"Failed to fetch known file paths from '{db_path}': {e}")
         return set()
     finally:
         if conn:
             conn.close()
 
 def hash_exists(db_path, file_hash):
-    """Verifica se um hash já existe na tabela com um status que impede reprocessamento."""
+    """Checks if a hash already exists in the table with a status that prevents reprocessing."""
     if not os.path.exists(db_path): return False
     conn = None
     try:
@@ -63,14 +60,14 @@ def hash_exists(db_path, file_hash):
         return cursor.fetchone() is not None
     except Exception as e:
         if "no such table" in str(e): return False
-        logging.error(f"Falha ao verificar se o hash '{file_hash}' existe em '{db_path}': {e}")
+        logging.error(f"Failed to check if hash '{file_hash}' exists in '{db_path}': {e}")
         return True
     finally:
         if conn:
             conn.close()
 
 def add_file_to_queue(db_path, file_path, status='pending'):
-    """Adiciona um ficheiro à fila no banco de dados especificado."""
+    """Adds a file to the queue in the specified database."""
     conn = None
     try:
         conn = sqlite3.connect(db_path)
@@ -78,13 +75,13 @@ def add_file_to_queue(db_path, file_path, status='pending'):
         cursor.execute("INSERT OR IGNORE INTO queue (file_path, status) VALUES (?, ?)", (file_path, status))
         conn.commit()
     except Exception as e:
-        logging.error(f"Falha ao adicionar o ficheiro '{file_path}' à fila em '{db_path}': {e}")
+        logging.error(f"Failed to add file '{file_path}' to the queue in '{db_path}': {e}")
     finally:
         if conn:
             conn.close()
 
 def get_pending_files(db_path, limit=10):
-    """Busca ficheiros pendentes do banco de dados de um perfil."""
+    """Fetches pending files from a profile's database."""
     if not os.path.exists(db_path): return []
     conn = None
     try:
@@ -94,14 +91,14 @@ def get_pending_files(db_path, limit=10):
         return cursor.fetchall()
     except Exception as e:
         if "no such table" in str(e): return []
-        logging.error(f"Falha ao buscar ficheiros pendentes de '{db_path}': {e}")
+        logging.error(f"Failed to fetch pending files from '{db_path}': {e}")
         return []
     finally:
         if conn:
             conn.close()
 
 def update_file_status(db_path, file_id, new_status, increment_retry=False, file_hash=None):
-    """Atualiza o status de um ficheiro no banco de dados de um perfil."""
+    """Updates the status of a file in a profile's database."""
     if not os.path.exists(db_path): return
     conn = None
     try:
@@ -115,13 +112,13 @@ def update_file_status(db_path, file_id, new_status, increment_retry=False, file
             cursor.execute("UPDATE queue SET status = ?, processed_at = CURRENT_TIMESTAMP WHERE id = ?", (new_status, file_id))
         conn.commit()
     except Exception as e:
-        logging.error(f"Falha ao atualizar status para o ID {file_id} em '{db_path}': {e}")
+        logging.error(f"Failed to update status for ID {file_id} in '{db_path}': {e}")
     finally:
         if conn:
             conn.close()
 
 def get_queue_stats(db_path):
-    """Obtém as estatísticas da fila para um perfil específico."""
+    """Gets the queue statistics for a specific profile."""
     stats = {'pending': 0, 'sent': 0, 'failed': 0, 'duplicate': 0, 'ignored': 0}
     if not os.path.exists(db_path): return stats
     conn = None
@@ -136,14 +133,14 @@ def get_queue_stats(db_path):
         return stats
     except Exception as e:
         if "no such table" in str(e): return stats
-        logging.error(f"Falha ao obter estatísticas de '{db_path}': {e}")
+        logging.error(f"Failed to get statistics from '{db_path}': {e}")
         return stats
     finally:
         if conn:
             conn.close()
 
 def get_all_queue_items(db_path):
-    """Obtém todos os itens da fila de um perfil."""
+    """Gets all items from a profile's queue."""
     if not os.path.exists(db_path): return []
     conn = None
     try:
@@ -153,14 +150,14 @@ def get_all_queue_items(db_path):
         return cursor.fetchall()
     except Exception as e:
         if "no such table" in str(e): return []
-        logging.error(f"Falha ao obter todos os itens de '{db_path}': {e}")
+        logging.error(f"Failed to get all items from '{db_path}': {e}")
         return []
     finally:
         if conn:
             conn.close()
 
 def reset_failed_items(db_path, item_ids):
-    """Redefine o status de itens com falha para um perfil."""
+    """Resets the status of failed items for a profile."""
     if not item_ids or not os.path.exists(db_path): return
     conn = None
     try:
@@ -171,7 +168,7 @@ def reset_failed_items(db_path, item_ids):
         cursor.execute(query, item_ids)
         conn.commit()
     except Exception as e:
-        logging.error(f"Falha ao redefinir itens em '{db_path}': {e}")
+        logging.error(f"Failed to reset items in '{db_path}': {e}")
     finally:
         if conn:
             conn.close()

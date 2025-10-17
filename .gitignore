@@ -181,3 +181,4 @@ cython_debug/
 .cursorindexingignore
 *.2*
 *.db
+file_gen.py

@@ -56,23 +56,26 @@ class FileWatcher(Thread):
         self.daemon = True
 
     def _get_date_limit(self):
-
         age_config = self.config.get('file_age', {})
         if isinstance(age_config, dict):
             age_value = age_config.get('value', 0)
-            age_unit = age_config.get('unit', 'Dias')
+            age_unit = age_config.get('unit', 'Days')
         else: 
             self.logger.warning("Configuração de 'idade de arquivo' em formato antigo. Usando padrão.")
             age_value = 0
-            age_unit = 'Dias'
+            age_unit = 'Days'
 
-        if age_unit == "Sem Limite":
+        # CORREÇÃO: Lógica ajustada para usar estritamente os valores em Inglês da UI
+        if age_unit == "No Limit":
             return None
 
         days_to_subtract = 0
-        if age_unit == "Dias": days_to_subtract = age_value
-        elif age_unit == "Meses": days_to_subtract = age_value * 30
-        elif age_unit == "Anos": days_to_subtract = age_value * 365
+        if age_unit == "Days":
+            days_to_subtract = age_value
+        elif age_unit == "Months":
+            days_to_subtract = age_value * 30
+        elif age_unit == "Years":
+            days_to_subtract = age_value * 365
 
         return date.today() - timedelta(days=days_to_subtract)
 
@@ -85,15 +88,18 @@ class FileWatcher(Thread):
         interval_config = self.config.get('scan_interval', {})
         if isinstance(interval_config, dict):
             scan_value = interval_config.get('value', 5)
-            scan_unit = interval_config.get('unit', 'seg')
+            scan_unit = interval_config.get('unit', 's')
         else: 
             self.logger.warning("Configuração de 'tempo de scan' em formato antigo. Usando padrão.")
             scan_value = interval_config or 5
-            scan_unit = 'seg'
+            scan_unit = 's'
 
+        # CORREÇÃO: Lógica ajustada para usar estritamente os valores em Inglês da UI
         scan_interval_seconds = scan_value
-        if scan_unit == 'min': scan_interval_seconds *= 60
-        elif scan_unit == 'horas': scan_interval_seconds *= 3600
+        if scan_unit == 'min':
+            scan_interval_seconds *= 60
+        elif scan_unit == 'hr':
+            scan_interval_seconds *= 3600
 
         self.logger.info(f"Monitor iniciado. Vigiando: {source_dir}")
         while not self.stop_event.is_set():
@@ -185,7 +191,7 @@ class FileProcessor(Thread):
         try:
             source_dir = profile_config.get('source_path', '')
             patterns = [p.strip() for p in profile_config.get('file_format', '').split(',') if p.strip()]
-            action = profile_config.get('action', 'copiar')
+            action = profile_config.get('action', 'copy')
             destination_path = profile_config.get('destination_path', '')
 
             age_map = { "Mesmo Dia": 0, "1 Mês": 30, "2 Meses": 60, "3 Meses": 90,
@@ -218,7 +224,7 @@ class FileProcessor(Thread):
                     file_info = {
                         "arquivo": entry.path,
                         "regra": matched_pattern,
-                        "acao": "Recortar" if action == 'recortar' else "Copiar",
+                        "acao": "move" if action == 'move' else "copy",
                         "destino": destination_path,
                         "novo_nome": entry.name,
                         "tamanho": f"{entry.stat().st_size / 1024:.2f} KB" if entry.stat().st_size > 1024 else f"{entry.stat().st_size} B"
@@ -233,7 +239,7 @@ class FileProcessor(Thread):
     def _process_file(self, record_id, file_path, retry_count):
         db_path = self.config.get('db_path', '')
         destination_dir = self.config.get('destination_path', '')
-        action = self.config.get('action', 'copiar')
+        action = self.config.get('action', 'copy')
 
         try:
             mod_time = os.path.getmtime(file_path)
@@ -261,7 +267,7 @@ class FileProcessor(Thread):
             unit_name = self._extract_unit_name(file_path)
             dest_path = os.path.join(destination_dir, os.path.basename(file_path))
 
-            if action == 'recortar':
+            if action == 'move':
                 shutil.move(file_path, dest_path)
             else:
                 shutil.copy(file_path, dest_path)
