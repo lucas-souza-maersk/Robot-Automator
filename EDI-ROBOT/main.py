@@ -13,7 +13,6 @@ import psutil
 import config_manager
 import logger_setup
 import data_manager
-from services import ServiceManager
 from profile_editor import ProfileEditor
 
 def resource_path(relative_path):
@@ -53,35 +52,17 @@ class CustomClosingDialog(tk.Toplevel):
         main_frame = ttk.Frame(self, padding=15)
         main_frame.pack(expand=True, fill=tk.BOTH)
 
-        label = ttk.Label(
-            main_frame,
-            text="What would you like to do?",
-            font=("Segoe UI", 11, "bold"),
-            anchor="center",
-            justify="center"
-        )
+        label = ttk.Label(main_frame, text="What would you like to do?", font=("Segoe UI", 11, "bold"), anchor="center", justify="center")
         label.pack(fill=tk.X, pady=(0, 15))
 
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(expand=True)
 
-        btn_minimize = ttk.Button(
-            button_frame,
-            text="Minimize to Tray",
-            command=self.minimize_to_tray,
-            style="Accent.TButton"
-        )
+        btn_minimize = ttk.Button(button_frame, text="Minimize to Tray", command=self.minimize_to_tray, style="Accent.TButton")
         btn_minimize.grid(row=0, column=0, padx=(0, 10))
 
-        btn_exit = ttk.Button(
-            button_frame, 
-            text="Exit Application", 
-            command=self.exit_app
-        )
+        btn_exit = ttk.Button(button_frame, text="Exit Application", command=self.exit_app)
         btn_exit.grid(row=0, column=1)
-
-        button_frame.grid_columnconfigure(0, weight=1)
-        button_frame.grid_columnconfigure(1, weight=1)
 
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
@@ -93,14 +74,11 @@ class CustomClosingDialog(tk.Toplevel):
         self.destroy()
         self.parent.quit_application()
 
-
-
 class MainApplication(tk.Tk):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
         self.profiles = config_manager.load_profiles()
-        self.running_services = {}
         self.active_profile_name = tk.StringVar()
 
         self.title("Robo Automator - Control Panel")
@@ -128,14 +106,12 @@ class MainApplication(tk.Tk):
         logging.info("Configuration Application Initialized.")
 
     def on_closing(self):
-        """Show the custom dialog when the user tries to close the window."""
         CustomClosingDialog(self)
 
     def check_service_is_running(self):
-        """Checks if the service process is running."""
         for proc in psutil.process_iter(['name', 'cmdline']):
             try:
-                if proc.info['name'] == 'RoboService.exe':
+                if proc.info['name'] in ['RoboService.exe', 'run_service.exe']:
                     return True
                 if 'python' in proc.info['name'].lower() and proc.info['cmdline'] and 'run_service.py' in proc.info['cmdline'][-1]:
                     return True
@@ -195,7 +171,11 @@ class MainApplication(tk.Tk):
         profile_name = self.active_profile_name.get()
         if profile_name:
             profile_config = self.profiles[profile_name]
-            data_manager.initialize_database(profile_config['db_path'])
+            db_path = profile_config.get('settings', {}).get('db_path')
+            if db_path:
+                data_manager.initialize_database(db_path)
+            else:
+                logging.warning(f"Profile '{profile_name}' has no db_path configured.")
         self.update_dashboard_display()
 
     def update_dashboard_loop(self):
@@ -211,15 +191,20 @@ class MainApplication(tk.Tk):
         else:
             self.main_service_status_var.set("AUTOMATION ENGINE: INACTIVE (Service process not detected)")
             self.main_service_status_label.config(foreground="red")
+
         profile_name = self.active_profile_name.get()
         if not profile_name or profile_name not in self.profiles:
             self.profile_status_var.set("No Profile Selected")
             self.profile_status_label.config(foreground="orange")
-            self.queue_count_var.set(0); self.sent_count_var.set(0)
-            self.failed_count_var.set(0); self.duplicate_count_var.set(0)
+            for var in [self.queue_count_var, self.sent_count_var, self.failed_count_var, self.duplicate_count_var]:
+                var.set(0)
             for i in self.queue_tree.get_children(): self.queue_tree.delete(i)
             return
-        profile_is_enabled = self.profiles[profile_name].get('enabled', False)
+
+        profile_config = self.profiles[profile_name]
+        profile_is_enabled = profile_config.get('enabled', False)
+        db_path = profile_config.get('settings', {}).get('db_path')
+
         if service_running and profile_is_enabled:
             self.profile_status_var.set("ACTIVE (Running via Service)")
             self.profile_status_label.config(foreground="green")
@@ -229,17 +214,24 @@ class MainApplication(tk.Tk):
         else:
             self.profile_status_var.set("PENDING (Engine service is stopped)")
             self.profile_status_label.config(foreground="orange")
-        stats = data_manager.get_queue_stats(self.profiles[profile_name]['db_path'])
-        self.queue_count_var.set(stats.get('pending', 0)); self.sent_count_var.set(stats.get('sent', 0))
-        self.failed_count_var.set(stats.get('failed', 0)); self.duplicate_count_var.set(stats.get('duplicate', 0))
-        if not self.queue_tree.selection():
-            for i in self.queue_tree.get_children(): self.queue_tree.delete(i)
-            items = data_manager.get_all_queue_items(self.profiles[profile_name]['db_path'])
-            for item in items:
-                filename = os.path.basename(item[1]) if item[1] else "N/A"
-                file_hash = (item[6][:10] + '...') if item[6] else "N/A"
-                display_item = (item[0], item[2], item[3], filename, file_hash, item[4], item[5] or "N/A")
-                self.queue_tree.insert("", "end", values=display_item)
+
+        if db_path:
+            stats = data_manager.get_queue_stats(db_path)
+            self.queue_count_var.set(stats.get('pending', 0))
+            self.sent_count_var.set(stats.get('sent', 0))
+            self.failed_count_var.set(stats.get('failed', 0))
+            self.duplicate_count_var.set(stats.get('duplicate', 0))
+
+            if not self.queue_tree.selection():
+                for i in self.queue_tree.get_children(): self.queue_tree.delete(i)
+                items = data_manager.get_all_queue_items(db_path)
+                for item in items:
+                    (item_id, status, retries, file_path, file_hash, added, processed, original_path) = item
+                    
+                    filename = os.path.basename(file_path or original_path or "N/A")
+                    hash_display = (file_hash[:10] + '...') if file_hash else "N/A"
+                    display_item = (item_id, status, retries, filename, hash_display, added, processed or "N/A")
+                    self.queue_tree.insert("", "end", values=display_item)
             
     def setup_dashboard(self):
         main_status_frame = ttk.Frame(self.dashboard_frame, padding=(0, 0, 0, 10))
@@ -253,6 +245,7 @@ class MainApplication(tk.Tk):
         self.profile_selector = ttk.Combobox(top_frame, textvariable=self.active_profile_name, state='readonly', width=40)
         self.profile_selector.pack(side='left', fill='x', expand=True)
         self.profile_selector.bind("<<ComboboxSelected>>", self.on_profile_select)
+
         status_panel = ttk.LabelFrame(self.dashboard_frame, text="Selected Profile Status", padding="10")
         status_panel.pack(fill="x", expand=False, pady=(10,0))
         status_panel.columnconfigure(1, weight=1)
@@ -260,6 +253,7 @@ class MainApplication(tk.Tk):
         self.profile_status_var = tk.StringVar()
         self.queue_count_var = tk.IntVar(); self.sent_count_var = tk.IntVar()
         self.failed_count_var = tk.IntVar(); self.duplicate_count_var = tk.IntVar()
+        
         ttk.Label(status_panel, text="Profile Status:", font=status_font).grid(row=0, column=0, sticky="w")
         self.profile_status_label = ttk.Label(status_panel, textvariable=self.profile_status_var, font=status_value_font)
         self.profile_status_label.grid(row=0, column=1, sticky="w", padx=5, columnspan=3)
@@ -271,6 +265,7 @@ class MainApplication(tk.Tk):
         ttk.Label(status_panel, textvariable=self.failed_count_var, font=status_value_font).grid(row=1, column=3, sticky="w", padx=5, pady=(10,0))
         ttk.Label(status_panel, text="Duplicates (Total):", font=status_font).grid(row=2, column=2, sticky="w", padx=20)
         ttk.Label(status_panel, textvariable=self.duplicate_count_var, font=status_value_font).grid(row=2, column=3, sticky="w", padx=5)
+
         queue_panel = ttk.LabelFrame(self.dashboard_frame, text="Queue Monitor", padding="10")
         queue_panel.pack(fill="both", expand=True, pady=10)
         tree_frame = ttk.Frame(queue_panel); tree_frame.pack(fill='both', expand=True)
@@ -300,26 +295,32 @@ class MainApplication(tk.Tk):
             logging.info("Log view cleared by user.")
 
     def setup_settings(self):
-        settings_container = ttk.Frame(self.settings_frame); settings_container.pack(expand=True, fill='both', pady=20)
-        left_frame = ttk.Frame(settings_container); left_frame.pack(side='left', fill='both', expand=True, padx=(0,10))
-        right_frame = ttk.Frame(settings_container); right_frame.pack(side='left', fill='y')
-        ttk.Label(left_frame, text="Existing Profiles:").pack(anchor='w')
-        self.profile_listbox = tk.Listbox(left_frame, height=15); self.profile_listbox.pack(fill='both', expand=True)
-        self.update_profile_listbox()
-        ttk.Button(right_frame, text="Create New Profile", command=self.create_profile).pack(fill='x', pady=5)
-        ttk.Button(right_frame, text="Edit Profile", command=self.edit_profile).pack(fill='x', pady=5)
-        ttk.Button(right_frame, text="Delete Profile", command=self.delete_profile).pack(fill='x', pady=5)
-        ttk.Separator(right_frame, orient='horizontal').pack(fill='x', pady=10)
-        ttk.Button(right_frame, text="Import Profile", command=self.import_profile).pack(fill='x', pady=5)
-        ttk.Button(right_frame, text="Export Profile", command=self.export_profile).pack(fill='x', pady=5)
-        about_frame = ttk.LabelFrame(right_frame, text="About", padding=10); about_frame.pack(fill='x', pady=(20,5), side='bottom')
-        ttk.Label(about_frame, text="Robo Automator V1.0\nDeveloped by Lucas Melo\nand Matheus dos Santos\n For APM Terminals Pecém", justify=tk.CENTER).pack()
-    
+            settings_container = ttk.Frame(self.settings_frame); settings_container.pack(expand=True, fill='both', pady=20)
+            left_frame = ttk.Frame(settings_container); left_frame.pack(side='left', fill='both', expand=True, padx=(0,10))
+            right_frame = ttk.Frame(settings_container); right_frame.pack(side='left', fill='y')
+            
+            ttk.Label(left_frame, text="Existing Profiles:").pack(anchor='w')
+            self.profile_listbox = tk.Listbox(left_frame, height=15); self.profile_listbox.pack(fill='both', expand=True)
+            self.update_profile_listbox()
+
+            ttk.Button(right_frame, text="Create New Profile", command=self.create_profile).pack(fill='x', pady=5)
+            ttk.Button(right_frame, text="Edit Profile", command=self.edit_profile).pack(fill='x', pady=5)
+            ttk.Button(right_frame, text="Delete Profile", command=self.delete_profile).pack(fill='x', pady=5)
+            
+            about_frame = ttk.LabelFrame(right_frame, text="About", padding=10)
+            about_frame.pack(fill='x', pady=(20, 5), side='bottom') 
+            ttk.Label(
+                about_frame, 
+                text="Robo Automator V2.0\nDeveloped by Lucas Melo\nFor APM Terminals Pecém", 
+                justify=tk.CENTER
+            ).pack()
+
     def update_profile_listbox(self):
         self.profile_listbox.delete(0, tk.END)
         for name in sorted(self.profiles.keys()):
             is_enabled = self.profiles[name].get('enabled', False)
-            display_name = f"{name} {'[ACTIVE]' if is_enabled else ''}"
+            status_tag = '[ACTIVE]' if is_enabled else '[INACTIVE]'
+            display_name = f"{name} {status_tag}"
             self.profile_listbox.insert(tk.END, display_name)
 
     def _get_selected_profile_name(self):
@@ -328,10 +329,16 @@ class MainApplication(tk.Tk):
             messagebox.showwarning("Warning", "Please select a profile.", parent=self)
             return None
         selected_text = self.profile_listbox.get(selected_indices[0])
-        return selected_text.replace(' [ACTIVE]', '')
+
+        if selected_text.endswith(' [ACTIVE]'):
+            return selected_text[:-9]
+        elif selected_text.endswith(' [INACTIVE]'):
+            return selected_text[:-11]
+        else:
+            return selected_text
 
     def create_profile(self):
-        editor = ProfileEditor(self, existing_names=list(self.profiles.keys()))
+        editor = ProfileEditor(self, existing_names=list(self.profiles.keys()), icon_path=self.icon_path)
         self.wait_window(editor)
         if editor.result:
             profile_name = editor.result['name']
@@ -345,7 +352,7 @@ class MainApplication(tk.Tk):
         if not old_name: return
         profile_data = self.profiles[old_name]
         existing_names = [name for name in self.profiles if name != old_name]
-        editor = ProfileEditor(self, profile=profile_data, existing_names=existing_names)
+        editor = ProfileEditor(self, profile=profile_data, existing_names=existing_names, icon_path=self.icon_path)
         self.wait_window(editor)
         if editor.result:
             new_data = editor.result
@@ -358,47 +365,32 @@ class MainApplication(tk.Tk):
     def delete_profile(self):
         profile_name = self._get_selected_profile_name()
         if not profile_name: return
-        if messagebox.askyesno("Confirm", f"Are you sure you want to delete the profile '{profile_name}'? Associated log and database files will not be deleted.", parent=self):
+        if messagebox.askyesno("Confirm", f"Are you sure you want to delete the profile '{profile_name}'?", parent=self):
             del self.profiles[profile_name]
             config_manager.save_profiles(self.profiles)
             self.update_profile_listbox(); self.update_profile_dropdown()
             messagebox.showinfo("Success", f"Profile '{profile_name}' deleted.")
     
-    def import_profile(self):
-        filepath = filedialog.askopenfilename(title="Import Profile", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
-        if not filepath: return
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f: profile_data = json.load(f)
-            if 'name' not in profile_data or 'source_path' not in profile_data: raise ValueError("Invalid JSON file.")
-            profile_name = profile_data['name']
-            while profile_name in self.profiles: profile_name = f"{profile_name}_imported"
-            self.profiles[profile_name] = profile_data
-            config_manager.save_profiles(self.profiles)
-            self.update_profile_listbox(); self.update_profile_dropdown()
-            messagebox.showinfo("Success", f"Profile '{profile_name}' imported successfully.")
-        except Exception as e:
-            messagebox.showerror("Import Error", f"Could not import profile:\n{e}")
-
-    def export_profile(self):
-        profile_name = self._get_selected_profile_name()
-        if not profile_name: return
-        profile_data = self.profiles[profile_name]
-        filepath = filedialog.asksaveasfilename(title="Export Profile", defaultextension=".json", initialfile=f"{profile_name}.json", filetypes=[("JSON files", "*.json")])
-        if not filepath: return
-        try:
-            with open(filepath, 'w', encoding='utf-8') as f: json.dump(profile_data, f, indent=4)
-            messagebox.showinfo("Success", f"Profile '{profile_name}' exported successfully to:\n{filepath}")
-        except Exception as e:
-            messagebox.showerror("Export Error", f"Could not export profile:\n{e}")
-
     def retry_selected_items(self):
         profile_name = self.active_profile_name.get()
         if not profile_name: return
+        
+        db_path = self.profiles[profile_name].get('settings', {}).get('db_path')
+        if not db_path:
+            messagebox.showerror("Error", "No database path configured for this profile.", parent=self)
+            return
+
         selected_items = self.queue_tree.selection()
-        if not selected_items: messagebox.showinfo("Information", "No items selected."); return
+        if not selected_items:
+            messagebox.showinfo("Information", "No items selected.", parent=self)
+            return
+            
         item_ids_to_retry = [self.queue_tree.item(i, 'values')[0] for i in selected_items if self.queue_tree.item(i, 'values')[1] == 'failed']
-        if not item_ids_to_retry: messagebox.showinfo("Information", "No 'failed' items were selected for retry."); return
-        db_path = self.profiles[profile_name]['db_path']
+        
+        if not item_ids_to_retry:
+            messagebox.showinfo("Information", "No 'failed' items were selected for retry.", parent=self)
+            return
+
         data_manager.reset_failed_items(db_path, item_ids_to_retry)
         messagebox.showinfo("Success", f"{len(item_ids_to_retry)} item(s) have been re-queued for processing.")
         self.update_dashboard_display()
@@ -414,7 +406,6 @@ class MainApplication(tk.Tk):
                 self.log_text_area.configure(state='disabled')
                 self.log_text_area.yview(tk.END)
         except queue.Empty: pass
-        except Exception: pass
         finally:
             if self.winfo_exists():
                 self.after(100, self.process_log_queue)

@@ -182,3 +182,5 @@ cython_debug/
 *.2*
 *.db
 file_gen.py
+EDI-ROBOT/profiles.json
+/EDI-ROBOT/sftp_downloads
