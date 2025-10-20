@@ -42,69 +42,77 @@ def start_profile(name, config, running_services, logger):
         sm.start()
         running_services[name] = {"manager": sm, "config": config}
         logger.info(f"Profile '{name}' started successfully.")
+    except KeyError as e:
+        logger.error(f"Failed to start profile '{name}' due to a missing configuration key: {e}. Please check profiles.json.", exc_info=True)
     except Exception as e:
-        logger.error(f"Failed to start profile '{name}': {e}", exc_info=True)
+        logger.error(f"An unexpected error occurred while starting profile '{name}': {e}", exc_info=True)
 
 
 def stop_profile(name, running_services, logger):
     """Stop a running profile and remove it from the dictionary."""
-    try:
-        running_services[name]["manager"].stop()
-        del running_services[name]
-        logger.info(f"Profile '{name}' stopped successfully.")
-    except Exception as e:
-        logger.warning(f"Error stopping profile '{name}': {e}")
+    if name in running_services:
+        try:
+            running_services[name]["manager"].stop()
+            del running_services[name]
+            logger.info(f"Profile '{name}' stopped successfully.")
+        except Exception as e:
+            logger.warning(f"Error stopping profile '{name}': {e}")
+    else:
+        logger.warning(f"Attempted to stop profile '{name}', which was not running.")
 
 
 def main():
     logger = setup_service_logger()
-    logger.info("Automation Engine started. Monitoring profiles...")
+    logger.info("Automation Engine started. Monitoring for active profiles...")
 
     running_services = {}
+    check_interval_seconds = 20
 
     try:
         while True:
-            logger.debug("Loading profiles from config_manager...")
+            logger.debug("Loading profiles from config...")
             try:
                 profiles = config_manager.load_profiles()
             except Exception as e:
-                logger.error(f"Error while loading profiles: {e}", exc_info=True)
-                time.sleep(30)
+                logger.error(f"Fatal error while loading profiles.json: {e}", exc_info=True)
+                time.sleep(check_interval_seconds)
                 continue
-
-            active_profiles = {
-                name: cfg for name, cfg in profiles.items() if cfg.get("enabled", False)
+            active_profile_names = {
+                name for name, cfg in profiles.items() if cfg.get("enabled", False)
             }
-
-            logger.debug(f"Active profiles: {list(active_profiles.keys()) or 'none'}")
-
-            for name, config in active_profiles.items():
+            
+            logger.debug(f"Found active profiles: {list(active_profile_names) or 'None'}")
+            
+            for name in active_profile_names:
+                config = profiles[name]
                 if name not in running_services:
-                    logger.info(f"Starting new profile '{name}'...")
+                    logger.info(f"New active profile detected: '{name}'. Starting...")
                     start_profile(name, config, running_services, logger)
                 else:
                     old_config = running_services[name]["config"]
                     if config != old_config:
-                        logger.info(f"Configuration changed for '{name}'. Restarting service...")
+                        logger.info(f"Configuration change detected for '{name}'. Restarting service...")
                         stop_profile(name, running_services, logger)
                         start_profile(name, config, running_services, logger)
                     elif not running_services[name]["manager"].is_running():
-                        logger.warning(f"Service '{name}' not running. Attempting restart...")
+                        logger.warning(f"Service for '{name}' was not running. Attempting restart...")
                         start_profile(name, config, running_services, logger)
 
-            for name in list(running_services.keys()):
-                if name not in active_profiles:
-                    logger.info(f"Profile '{name}' was disabled. Stopping...")
-                    stop_profile(name, running_services, logger)
+            running_profile_names = set(running_services.keys())
+            profiles_to_stop = running_profile_names - active_profile_names
+            
+            for name in profiles_to_stop:
+                logger.info(f"Profile '{name}' is no longer active or was removed. Stopping...")
+                stop_profile(name, running_services, logger)
 
-            logger.debug("Cycle complete. Waiting 60 seconds before next check.")
-            time.sleep(60)
+            logger.debug(f"Cycle complete. Waiting {check_interval_seconds} seconds...")
+            time.sleep(check_interval_seconds)
 
     except KeyboardInterrupt:
-        logger.info("Stopping all services...")
+        logger.info("Shutdown signal received. Stopping all services...")
         for name in list(running_services.keys()):
             stop_profile(name, running_services, logger)
-        logger.info("All services stopped. Exiting Automation Engine.")
+        logger.info("All services stopped. Automation Engine is exiting.")
 
 
 if __name__ == "__main__":

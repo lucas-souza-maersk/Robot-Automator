@@ -3,51 +3,18 @@ import time
 import os
 import shutil
 import hashlib
+import fnmatch
+import pysftp
+import keyring
 from threading import Thread, Event
 from datetime import datetime, date, timedelta
-import fnmatch
 
 import data_manager
 import logger_setup
 
-class ServiceManager:
-    """Gere os serviços (FileWatcher, FileProcessor) para um único perfil."""
-    def __init__(self, profile_config, main_log_queue):
-        self.profile_config = profile_config
-        self.watcher_thread = None
-        self.processor_thread = None
-        self.stop_event = Event()
-        self.logger = logger_setup.create_profile_logger(profile_config['log_path'], main_log_queue)
 
-    def start(self):
-        if self.is_running():
-            self.logger.warning("Tentativa de iniciar serviços que já estão em execução.")
-            return
-        self.logger.info("Iniciando serviços...")
-        self.stop_event.clear()
-        data_manager.initialize_database(self.profile_config['db_path'])
-        self.watcher_thread = FileWatcher(self.profile_config, self.stop_event, self.logger)
-        self.processor_thread = FileProcessor(self.profile_config, self.stop_event, self.logger)
-        self.watcher_thread.start()
-        self.processor_thread.start()
-        self.logger.info("Serviços iniciados com sucesso.")
-
-    def stop(self):
-        if not self.is_running():
-            return
-        self.logger.info("Parando serviços...")
-        self.stop_event.set()
-        if self.watcher_thread:
-            self.watcher_thread.join()
-        if self.processor_thread:
-            self.processor_thread.join()
-        self.logger.info("Serviços parados com sucesso.")
-
-    def is_running(self):
-        return (self.watcher_thread and self.watcher_thread.is_alive()) or \
-               (self.processor_thread and self.processor_thread.is_alive())
-
-class FileWatcher(Thread):
+class BaseWatcher(Thread):
+    """Base class for all watchers (Local, SFTP, etc.)."""
     def __init__(self, profile_config, stop_event, logger):
         super().__init__()
         self.config = profile_config
@@ -55,90 +22,59 @@ class FileWatcher(Thread):
         self.logger = logger
         self.daemon = True
 
-    def _get_date_limit(self):
-        age_config = self.config.get('file_age', {})
-        if isinstance(age_config, dict):
-            age_value = age_config.get('value', 0)
-            age_unit = age_config.get('unit', 'Days')
-        else: 
-            self.logger.warning("Configuração de 'idade de arquivo' em formato antigo. Usando padrão.")
-            age_value = 0
-            age_unit = 'Days'
+    def run(self):
+        raise NotImplementedError("Each watcher must implement its own run method.")
 
-        # CORREÇÃO: Lógica ajustada para usar estritamente os valores em Inglês da UI
+    def _get_date_limit(self):
+        age_config = self.config['settings'].get('file_age', {})
+        age_value = age_config.get('value', 0)
+        age_unit = age_config.get('unit', 'Days')
+
         if age_unit == "No Limit":
             return None
 
-        days_to_subtract = 0
-        if age_unit == "Days":
-            days_to_subtract = age_value
-        elif age_unit == "Months":
-            days_to_subtract = age_value * 30
-        elif age_unit == "Years":
-            days_to_subtract = age_value * 365
-
+        days_to_subtract = age_value
+        if age_unit == "Months": days_to_subtract *= 30
+        elif age_unit == "Years": days_to_subtract *= 365
         return date.today() - timedelta(days=days_to_subtract)
 
-    def run(self):
-        source_dir = self.config['source_path']
-        db_path = self.config['db_path']
-        patterns = [p.strip() for p in self.config['file_format'].split(',') if p.strip()]
-        date_limit = self._get_date_limit()
+    def _get_scan_interval(self):
+        interval_config = self.config['settings'].get('scan_interval', {})
+        scan_value = interval_config.get('value', 5)
+        scan_unit = interval_config.get('unit', 's')
+        
+        if scan_unit == 'min': return scan_value * 60
+        if scan_unit == 'hr': return scan_value * 3600
+        return scan_value
 
-        interval_config = self.config.get('scan_interval', {})
-        if isinstance(interval_config, dict):
-            scan_value = interval_config.get('value', 5)
-            scan_unit = interval_config.get('unit', 's')
-        else: 
-            self.logger.warning("Configuração de 'tempo de scan' em formato antigo. Usando padrão.")
-            scan_value = interval_config or 5
-            scan_unit = 's'
-
-        # CORREÇÃO: Lógica ajustada para usar estritamente os valores em Inglês da UI
-        scan_interval_seconds = scan_value
-        if scan_unit == 'min':
-            scan_interval_seconds *= 60
-        elif scan_unit == 'hr':
-            scan_interval_seconds *= 3600
-
-        self.logger.info(f"Monitor iniciado. Vigiando: {source_dir}")
-        while not self.stop_event.is_set():
-            try:
-                if not os.path.isdir(source_dir):
-                    self.logger.error(f"Pasta de origem não encontrada: {source_dir}. Pausando monitor.")
-                    self.stop_event.wait(60)
-                    continue
-                known_files = data_manager.get_known_filepaths(db_path)
-                with os.scandir(source_dir) as entries:
-                    for entry in entries:
-                        if not entry.is_file() or entry.path in known_files:
-                            continue
-                        if not any(fnmatch.fnmatch(entry.name, pattern) for pattern in patterns):
-                            continue
-                        try:
-                            mod_date = date.fromtimestamp(entry.stat().st_mtime)
-                            if date_limit is None or mod_date >= date_limit:
-                                data_manager.add_file_to_queue(db_path, entry.path, status='pending')
-                                self.logger.info(f"Novo arquivo: '{entry.name}' adicionado à fila.")
-                            else:
-                                mod_date_str = mod_date.strftime('%d/%m/%Y')
-                                self.logger.warning(f"Arquivo antigo ignorado: '{entry.name}' (data: {mod_date_str}).")
-                                data_manager.add_file_to_queue(db_path, entry.path, status='ignored')
-                        except Exception:
-                            continue
-            except Exception as e:
-                self.logger.error(f"Erro crítico no monitor de arquivos: {e}", exc_info=True)
-
-            self.stop_event.wait(scan_interval_seconds)
-        self.logger.info(f"Serviço de monitoramento parado.")
-
-class FileProcessor(Thread):
+class BaseProcessor(Thread):
+    """Base class for all processors."""
     def __init__(self, profile_config, stop_event, logger):
         super().__init__()
         self.config = profile_config
         self.stop_event = stop_event
         self.logger = logger
         self.daemon = True
+
+    def run(self):
+        db_path = self.config['settings']['db_path']
+        self.logger.info("File processor started.")
+        while not self.stop_event.is_set():
+            try:
+                pending_files = data_manager.get_pending_files(db_path)
+                if not pending_files:
+                    self.stop_event.wait(5)
+                    continue
+                for record_id, file_path, retry_count in pending_files:
+                    if self.stop_event.is_set(): break
+                    self._process_file(record_id, file_path, retry_count)
+            except Exception as e:
+                self.logger.error(f"Critical error in processor loop: {e}", exc_info=True)
+                self.stop_event.wait(10)
+        self.logger.info("File processor stopped.")
+
+    def _process_file(self, record_id, file_path, retry_count):
+        raise NotImplementedError("Each processor must implement its own _process_file method.")
 
     def _calculate_hash(self, file_path):
         sha256_hash = hashlib.sha256()
@@ -150,134 +86,260 @@ class FileProcessor(Thread):
         except FileNotFoundError:
             return None
 
-    def _extract_unit_name(self, file_path):
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                for line in f:
-                    clean_line = line.strip()
-                    if clean_line.startswith('EQD'):
-                        parts = clean_line.split('+')
-                        if len(parts) >= 3:
-                            return parts[2]
-            return 'NAO_ENCONTRADA'
-        except Exception as e:
-            self.logger.error(f"Erro ao extrair nome da unidade do ficheiro {os.path.basename(file_path)}: {e}")
-            return 'ERRO_LEITURA'
-
+class LocalWatcher(BaseWatcher):
+    """Watches a local directory for new files."""
     def run(self):
-        db_path = self.config.get('db_path', '')
-        self.logger.info("Processador de ficheiros iniciado.")
+        source_dir = self.config['source']['path']
+        db_path = self.config['settings']['db_path']
+        patterns = [p.strip() for p in self.config['settings']['file_format'].split(',') if p.strip()]
+        date_limit = self._get_date_limit()
+        scan_interval = self._get_scan_interval()
+
+        self.logger.info(f"Local watcher started. Monitoring: {source_dir}")
         while not self.stop_event.is_set():
             try:
-                pending_files = data_manager.get_pending_files(db_path)
-                if not pending_files:
-                    self.stop_event.wait(5)
+                if not os.path.isdir(source_dir):
+                    self.logger.error(f"Source directory not found: {source_dir}. Pausing watcher.")
+                    self.stop_event.wait(60)
                     continue
-                for record_id, file_path, retry_count in pending_files:
-                    if self.stop_event.is_set():
-                        break
-                    self._process_file(record_id, file_path, retry_count)
+
+                known_files = data_manager.get_known_filepaths(db_path)
+                with os.scandir(source_dir) as entries:
+                    for entry in entries:
+                        if not entry.is_file() or entry.path in known_files:
+                            continue
+                        if not any(fnmatch.fnmatch(entry.name, pattern) for pattern in patterns):
+                            continue
+                        
+                        mod_date = date.fromtimestamp(entry.stat().st_mtime)
+                        if date_limit is None or mod_date >= date_limit:
+                            data_manager.add_file_to_queue(db_path, entry.path, status='pending')
+                            self.logger.info(f"New file '{entry.name}' added to queue.")
             except Exception as e:
-                self.logger.error(f"Erro no loop principal do processador: {e}", exc_info=True)
-                self.stop_event.wait(10)
-        self.logger.info("Processador de ficheiros parado.")
+                self.logger.error(f"Error in local watcher: {e}", exc_info=True)
 
-    @staticmethod
-    def generate_preview(profile_config):
-        """
-        Simula a execução de um perfil e retorna uma lista de ficheiros que seriam processados.
-        Não executa nenhuma ação real nem modifica o banco de dados.
-        """
-        try:
-            source_dir = profile_config.get('source_path', '')
-            patterns = [p.strip() for p in profile_config.get('file_format', '').split(',') if p.strip()]
-            action = profile_config.get('action', 'copy')
-            destination_path = profile_config.get('destination_path', '')
+            self.stop_event.wait(scan_interval)
+        self.logger.info("Local watcher stopped.")
 
-            age_map = { "Mesmo Dia": 0, "1 Mês": 30, "2 Meses": 60, "3 Meses": 90,
-                        "6 Meses": 180, "Este Ano": 365, "Sem Limite": -1 }
-            days_to_subtract = age_map.get(profile_config.get('file_age', 'Sem Limite'), -1)
-            date_limit = None
-            if days_to_subtract != -1:
-                if profile_config.get('file_age') == "Este Ano":
-                    date_limit = date(date.today().year, 1, 1)
-                else:
-                    date_limit = date.today() - timedelta(days=days_to_subtract)
+class SftpWatcher(BaseWatcher):
+    """Watches a remote SFTP directory and downloads new files."""
+    def run(self):
+        source_cfg = self.config['source']
+        db_path = self.config['settings']['db_path']
+        patterns = [p.strip() for p in self.config['settings']['file_format'].split(',') if p.strip()]
+        date_limit = self._get_date_limit()
+        scan_interval = self._get_scan_interval()
+        
+        host = source_cfg.get('host')
+        username = source_cfg.get('username')
+        remote_path = source_cfg.get('remote_path', '/')
+        local_download_path = os.path.join(os.getcwd(), "sftp_downloads", self.config['name'])
+        os.makedirs(local_download_path, exist_ok=True)
 
-            if not os.path.isdir(source_dir):
-                raise FileNotFoundError(f"Pasta de origem não encontrada: {source_dir}")
+        self.logger.info(f"SFTP watcher started for {username}@{host}:{remote_path}")
 
-            found_files = []
-            with os.scandir(source_dir) as entries:
-                for entry in entries:
-                    if not entry.is_file():
-                        continue
+        while not self.stop_event.is_set():
+            try:
+                password = keyring.get_password(f"robot_automator::{host}", username)
+                if not password:
+                    raise ValueError(f"Password for {username}@{host} not found in keyring.")
 
-                    matched_pattern = next((p for p in patterns if fnmatch.fnmatch(entry.name, p)), None)
-                    if not matched_pattern:
-                        continue
+                cnopts = pysftp.CnOpts()
+                cnopts.hostkeys = None
 
-                    mod_date = date.fromtimestamp(entry.stat().st_mtime)
-                    if date_limit is not None and mod_date < date_limit:
-                        continue
+                with pysftp.Connection(host, username=username, password=password, port=source_cfg.get('port', 22), cnopts=cnopts) as sftp:
+                    sftp.cwd(remote_path)
+                    known_files = data_manager.get_known_filepaths(db_path)
 
-                    file_info = {
-                        "arquivo": entry.path,
-                        "regra": matched_pattern,
-                        "acao": "move" if action == 'move' else "copy",
-                        "destino": destination_path,
-                        "novo_nome": entry.name,
-                        "tamanho": f"{entry.stat().st_size / 1024:.2f} KB" if entry.stat().st_size > 1024 else f"{entry.stat().st_size} B"
-                    }
-                    found_files.append(file_info)
+                    for attr in sftp.listdir_attr():
+                        remote_filepath = f"{remote_path}/{attr.filename}".replace("//", "/")
+                        if not sftp.isfile(attr.filename) or remote_filepath in known_files:
+                            continue
+                        if not any(fnmatch.fnmatch(attr.filename, p) for p in patterns):
+                            continue
+                            
+                        mod_date = date.fromtimestamp(attr.st_mtime)
+                        if date_limit is None or mod_date >= date_limit:
+                            local_dest_path = os.path.join(local_download_path, attr.filename)
+                            self.logger.info(f"Downloading new file: {attr.filename}")
+                            sftp.get(attr.filename, local_dest_path)
+                            
+                            data_manager.add_file_to_queue(db_path, local_dest_path, status='pending', original_path=remote_filepath)
+                            self.logger.info(f"File '{attr.filename}' added to queue.")
 
-            return found_files, None
+            except Exception as e:
+                self.logger.error(f"Error in SFTP watcher: {e}", exc_info=True)
+            
+            self.stop_event.wait(scan_interval)
+        self.logger.info("SFTP watcher stopped.")
 
-        except Exception as e:
-            return [], str(e)
 
+class FileProcessor(BaseProcessor):
+    """Processes files from the queue, moving/copying them to a local or remote destination."""
     def _process_file(self, record_id, file_path, retry_count):
-        db_path = self.config.get('db_path', '')
-        destination_dir = self.config.get('destination_path', '')
+        db_path = self.config['settings']['db_path']
         action = self.config.get('action', 'copy')
+        dest_cfg = self.config.get('destination', {})
+        dest_type = dest_cfg.get('type', 'local')
 
         try:
-            mod_time = os.path.getmtime(file_path)
-            data_modificacao_str = datetime.fromtimestamp(mod_time).strftime('%d/%m/%Y %H:%M:%S')
-            self.logger.info(f"Processando arquivo ID {record_id}: '{os.path.basename(file_path)}' (Modificado em: {data_modificacao_str})")
-        except FileNotFoundError:
-            self.logger.error(f"Arquivo não encontrado (ID: {record_id}): {file_path}. Marcando como falha.")
-            data_manager.update_file_status(db_path, record_id, 'failed')
-            return
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File to process not found: {file_path}")
 
-        file_hash = self._calculate_hash(file_path)
-        if file_hash is None:
-            self.logger.error(f"Não foi possível calcular hash do arquivo ID {record_id}: {file_path}")
-            return
-
-        try:
+            file_hash = self._calculate_hash(file_path)
             if data_manager.hash_exists(db_path, file_hash):
-                self.logger.warning(f"Duplicado detectado pelo hash no processamento. ID: {record_id}.")
+                self.logger.warning(f"Duplicate file detected by hash: {os.path.basename(file_path)}. Marking as duplicate.")
                 data_manager.update_file_status(db_path, record_id, 'duplicate', file_hash=file_hash)
                 return
 
-            if not os.path.isdir(destination_dir):
-                raise ValueError(f"A pasta de destino não é válida: {destination_dir}")
-
-            unit_name = self._extract_unit_name(file_path)
-            dest_path = os.path.join(destination_dir, os.path.basename(file_path))
+            if dest_type == 'local':
+                self._handle_local_destination(record_id, file_path, file_hash)
+            elif dest_type == 'SFTP':
+                self._handle_sftp_destination(record_id, file_path, file_hash)
+            else:
+                raise NotImplementedError(f"Destination type '{dest_type}' is not supported.")
 
             if action == 'move':
-                shutil.move(file_path, dest_path)
-            else:
-                shutil.copy(file_path, dest_path)
-
-            self.logger.info(f"Arquivo ID {record_id} processado com sucesso. Unidade: {unit_name}.")
-            data_manager.update_file_status(db_path, record_id, 'sent', file_hash=file_hash)
+                try:
+                    os.remove(file_path)
+                except Exception as e:
+                    self.logger.warning(f"Could not remove source file after move: {e}")
 
         except Exception as e:
-            self.logger.error(f"Falha ao processar arquivo ID {record_id}: {e}")
+            self.logger.error(f"Failed to process file ID {record_id} ({os.path.basename(file_path)}): {e}", exc_info=True)
             if retry_count + 1 >= 5:
                 data_manager.update_file_status(db_path, record_id, 'failed', increment_retry=True)
             else:
                 data_manager.update_file_status(db_path, record_id, 'pending', increment_retry=True)
+
+    def _handle_local_destination(self, record_id, file_path, file_hash):
+        db_path = self.config['settings']['db_path']
+        action = self.config.get('action', 'copy')
+        dest_dir = self.config['destination']['path']
+        
+        if not os.path.isdir(dest_dir):
+            os.makedirs(dest_dir, exist_ok=True)
+            
+        dest_path = os.path.join(dest_dir, os.path.basename(file_path))
+
+        if action == 'move' and self.config['source']['type'] == 'local':
+            shutil.move(file_path, dest_path)
+        else:
+            shutil.copy(file_path, dest_path)
+        
+        self.logger.info(f"File ID {record_id} successfully processed to local destination.")
+        data_manager.update_file_status(db_path, record_id, 'sent', file_hash=file_hash)
+
+    def _handle_sftp_destination(self, record_id, file_path, file_hash):
+        db_path = self.config['settings']['db_path']
+        dest_cfg = self.config['destination']
+        host = dest_cfg.get('host')
+        username = dest_cfg.get('username')
+        remote_path = dest_cfg.get('remote_path', '/')
+        
+        password = keyring.get_password(f"robot_automator::{host}", username)
+        if not password:
+            raise ValueError(f"Password for {username}@{host} not found in keyring.")
+
+        cnopts = pysftp.CnOpts()
+        cnopts.hostkeys = None
+
+        with pysftp.Connection(host, username=username, password=password, port=dest_cfg.get('port', 22), cnopts=cnopts) as sftp:
+            sftp.cwd(remote_path)
+            remote_dest_path = f"{remote_path}/{os.path.basename(file_path)}".replace("//", "/")
+            sftp.put(file_path, remote_dest_path)
+        
+        self.logger.info(f"File ID {record_id} successfully uploaded to SFTP destination.")
+        data_manager.update_file_status(db_path, record_id, 'sent', file_hash=file_hash)
+
+
+
+class ServiceManager:
+    """Manages the lifecycle of a single profile's runner thread."""
+    def __init__(self, profile_config, main_log_queue):
+        self.profile_config = profile_config
+        self.runner_thread = None
+        self.stop_event = Event()
+        self.logger = logger_setup.create_profile_logger(
+            self.profile_config['settings']['log_path'], 
+            main_log_queue
+        )
+
+    def start(self):
+        if self.is_running():
+            self.logger.warning("Attempted to start services that are already running.")
+            return
+        
+        self.logger.info("Starting services...")
+        self.stop_event.clear()
+        
+        db_path = self.profile_config['settings']['db_path']
+        data_manager.initialize_database(db_path)
+        
+        self.runner_thread = ProfileRunner(self.profile_config, self.stop_event, self.logger)
+        self.runner_thread.start()
+        self.logger.info("Services started successfully.")
+
+    def stop(self):
+        if not self.is_running():
+            return
+        
+        self.logger.info("Stopping services...")
+        self.stop_event.set()
+        if self.runner_thread:
+            self.runner_thread.join(timeout=10) 
+        self.runner_thread = None
+        self.logger.info("Services stopped successfully.")
+
+    def is_running(self):
+        return self.runner_thread and self.runner_thread.is_alive()
+
+
+class ProfileRunner(Thread):
+    """The main thread for a profile, which manages its specific watcher and processor."""
+    WATCHER_MAPPING = {
+        'local': LocalWatcher,
+        'SFTP': SftpWatcher,
+    }
+    PROCESSOR_MAPPING = {
+        'local': FileProcessor,
+        'SFTP': FileProcessor,
+    }
+
+    def __init__(self, profile_config, stop_event, logger):
+        super().__init__()
+        self.config = profile_config
+        self.stop_event = stop_event
+        self.logger = logger
+        self.daemon = True
+
+    def run(self):
+        source_type = self.config['source']['type']
+        
+        WatcherClass = self.WATCHER_MAPPING.get(source_type)
+        ProcessorClass = self.PROCESSOR_MAPPING.get(self.config['destination']['type'])
+
+        if not WatcherClass:
+            self.logger.error(f"No watcher found for source type '{source_type}'. Stopping profile.")
+            return
+        if not ProcessorClass:
+            self.logger.error(f"No processor found for destination type '{self.config['destination']['type']}'. Stopping profile.")
+            return
+
+        watcher = WatcherClass(self.config, self.stop_event, self.logger)
+        processor = ProcessorClass(self.config, self.stop_event, self.logger)
+
+        watcher.start()
+        processor.start()
+        
+        self.logger.info(f"Profile '{self.config['name']}' is now running.")
+
+        while not self.stop_event.is_set():
+            if not watcher.is_alive() or not processor.is_alive():
+                self.logger.error("A critical thread has died. Stopping profile.")
+                self.stop_event.set()
+            self.stop_event.wait(5)
+        
+        watcher.join()
+        processor.join()
+        self.logger.info(f"Profile '{self.config['name']}' has been stopped.")
