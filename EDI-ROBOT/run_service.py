@@ -96,6 +96,17 @@ def main():
                         start_profile(name, config, running_services, logger)
                     elif not running_services[name]["manager"].is_running():
                         logger.warning(f"Service for '{name}' was not running. Attempting restart...")
+                        
+                        try:
+                            alert_mgr = running_services[name]["manager"].alert_manager
+                            alert_mgr.send(
+                                "CRITICAL",
+                                f"Crash de Perfil - {name}",
+                                f"O serviço principal detectou que o perfil '{name}' não estava rodando (crash). Uma reinicialização está sendo tentada agora."
+                            )
+                        except Exception as alert_e:
+                            logger.error(f"Failed to send crash alert for profile '{name}': {alert_e}")
+
                         start_profile(name, config, running_services, logger)
 
             running_profile_names = set(running_services.keys())

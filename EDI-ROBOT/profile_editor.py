@@ -336,6 +336,7 @@ class ProfileEditor(tk.Toplevel):
         
         self.title("Create / Edit Profile")
         self.resizable(False, False)
+        self.geometry("600x800") 
         self.grab_set()
         if icon_path:
             try: self.iconbitmap(icon_path)
@@ -345,6 +346,7 @@ class ProfileEditor(tk.Toplevel):
         self._setup_ui()
         self._load_profile_data()
         self._update_ui_for_types()
+        self._toggle_alert_frame()
         self._center_window()
 
     def _setup_vars(self):
@@ -363,6 +365,10 @@ class ProfileEditor(tk.Toplevel):
         self.scan_interval_value = tk.IntVar(value=5)
         self.scan_interval_unit = tk.StringVar(value="s")
         self.remote_config = {}
+
+        self.alert_enabled = tk.BooleanVar(value=False)
+        self.alert_webhook_url = tk.StringVar()
+        self.alert_level = tk.StringVar(value="Apenas Crítico")
 
     def _setup_ui(self):
         main_frame = ttk.Frame(self, padding=15)
@@ -413,6 +419,24 @@ class ProfileEditor(tk.Toplevel):
         ttk.Spinbox(settings_frame, from_=1, to=999, textvariable=self.scan_interval_value, width=5).grid(row=3, column=1, sticky='w')
         interval_combo = ttk.Combobox(settings_frame, textvariable=self.scan_interval_unit, values=["s", "min", "hr"], state='readonly', width=10)
         interval_combo.grid(row=3, column=2, sticky='w', padx=5)
+        
+        alert_frame = ttk.LabelFrame(main_frame, text="Alertas (MS Teams)", padding=10)
+        alert_frame.pack(fill=tk.X, pady=10)
+        alert_frame.columnconfigure(1, weight=1)
+
+        ttk.Checkbutton(alert_frame, text="Habilitar Alertas no Teams", variable=self.alert_enabled, command=self._toggle_alert_frame).grid(row=0, column=0, columnspan=2, sticky='w', pady=(0,5))
+        
+        self.alert_widgets_frame = ttk.Frame(alert_frame)
+        self.alert_widgets_frame.grid(row=1, column=0, columnspan=2, sticky='ew')
+        self.alert_widgets_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(self.alert_widgets_frame, text="Webhook URL:").grid(row=0, column=0, sticky='w', padx=5, pady=5)
+        ttk.Entry(self.alert_widgets_frame, textvariable=self.alert_webhook_url, width=40).grid(row=0, column=1, sticky='ew', padx=5)
+
+        ttk.Label(self.alert_widgets_frame, text="Nível de Alerta:").grid(row=1, column=0, sticky='w', padx=5, pady=5)
+        alert_level_combo = ttk.Combobox(self.alert_widgets_frame, textvariable=self.alert_level, values=["Apenas Crítico", "Erros & Avisos", "Info (Sucessos)"], state='readonly', width=20)
+        alert_level_combo.grid(row=1, column=1, sticky='w', padx=5)
+
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(side=tk.BOTTOM, pady=(10, 0))
         ttk.Button(button_frame, text="Generate Preview", command=self._on_generate_preview).pack(side=tk.LEFT, padx=5)
@@ -420,6 +444,12 @@ class ProfileEditor(tk.Toplevel):
         ttk.Button(button_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5)
         self.source_type.trace_add("write", self._update_ui_for_types)
         self.dest_type.trace_add("write", self._update_ui_for_types)
+
+    def _toggle_alert_frame(self, *args):
+        if self.alert_enabled.get():
+            self.alert_widgets_frame.grid(row=1, column=0, columnspan=2, sticky='ew')
+        else:
+            self.alert_widgets_frame.grid_forget()
 
     def _create_path_entry(self, parent, label_text, var, is_file=False, ext="", pady=0):
         parent.columnconfigure(1, weight=1)
@@ -496,6 +526,12 @@ class ProfileEditor(tk.Toplevel):
         interval = settings.get('scan_interval', {'value': 5, 'unit': 's'})
         self.scan_interval_value.set(interval.get('value', 5))
         self.scan_interval_unit.set(interval.get('unit', 's'))
+        
+        alert_cfg = settings.get('alerting', {})
+        self.alert_enabled.set(alert_cfg.get('enabled', False))
+        self.alert_webhook_url.set(alert_cfg.get('webhook_url', ''))
+        self.alert_level.set(alert_cfg.get('level', 'Apenas Crítico'))
+        
         self.remote_config = {'source': source_cfg, 'destination': dest_cfg}
 
     def _on_save(self):
@@ -507,6 +543,11 @@ class ProfileEditor(tk.Toplevel):
         if name != current_name and name in self.existing_names:
             messagebox.showerror("Error", "A profile with this name already exists.", parent=self)
             return
+        
+        if self.alert_enabled.get() and not self.alert_webhook_url.get().strip():
+             messagebox.showerror("Validation Error", "Teams Webhook URL is required when alerts are enabled.", parent=self)
+             return
+
         source = {'type': self.source_type.get()}
         if source['type'] == 'local':
             if not self.source_local_path.get():
@@ -541,6 +582,11 @@ class ProfileEditor(tk.Toplevel):
                 'file_format': self.file_format.get(),
                 'file_age': {'value': self.file_age_value.get(), 'unit': self.file_age_unit.get()},
                 'scan_interval': {'value': self.scan_interval_value.get(), 'unit': self.scan_interval_unit.get()},
+                'alerting': {
+                    'enabled': self.alert_enabled.get(),
+                    'webhook_url': self.alert_webhook_url.get().strip(),
+                    'level': self.alert_level.get()
+                }
             }
         }
         self.destroy()

@@ -199,11 +199,19 @@ class MainApplication(tk.Tk):
             for var in [self.queue_count_var, self.sent_count_var, self.failed_count_var, self.duplicate_count_var]:
                 var.set(0)
             for i in self.queue_tree.get_children(): self.queue_tree.delete(i)
+            
+            self.open_folder_button.config(state='disabled')
             return
 
         profile_config = self.profiles[profile_name]
         profile_is_enabled = profile_config.get('enabled', False)
         db_path = profile_config.get('settings', {}).get('db_path')
+
+        dest_cfg = profile_config.get('destination', {})
+        if dest_cfg.get('type') == 'local' and dest_cfg.get('path'):
+            self.open_folder_button.config(state='normal')
+        else:
+            self.open_folder_button.config(state='disabled')
 
         if service_running and profile_is_enabled:
             self.profile_status_var.set("ACTIVE (Running via Service)")
@@ -279,9 +287,13 @@ class MainApplication(tk.Tk):
         self.queue_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         self.queue_tree.grid(row=0, column=0, sticky='nsew'); vsb.grid(row=0, column=1, sticky='ns'); hsb.grid(row=1, column=0, sticky='ew')
         tree_frame.grid_rowconfigure(0, weight=1); tree_frame.grid_columnconfigure(0, weight=1)
+        
         button_frame = ttk.Frame(queue_panel); button_frame.pack(fill='x', pady=(10, 0))
         ttk.Button(button_frame, text="Refresh Queue", command=self.update_dashboard_display).pack(side="left", padx=5)
         ttk.Button(button_frame, text="Retry Selected Failed", command=self.retry_selected_items).pack(side="left", padx=5)
+        
+        self.open_folder_button = ttk.Button(button_frame, text="Open Destination Folder", command=self._open_destination_folder, state='disabled')
+        self.open_folder_button.pack(side="left", padx=5)
 
     def setup_logs(self):
         self.log_text_area = scrolledtext.ScrolledText(self.logs_frame, wrap=tk.WORD, state='disabled', font=("Consolas", 9))
@@ -311,7 +323,7 @@ class MainApplication(tk.Tk):
             about_frame.pack(fill='x', pady=(20, 5), side='bottom') 
             ttk.Label(
                 about_frame, 
-                text="Robo Automator V2.0\nDeveloped by Lucas Melo\nFor APM Terminals Pecém", 
+                text="Robo Automator V2.5\nDeveloped by Lucas Melo\nFor APM Terminals Pecém", 
                 justify=tk.CENTER
             ).pack()
 
@@ -394,6 +406,26 @@ class MainApplication(tk.Tk):
         data_manager.reset_failed_items(db_path, item_ids_to_retry)
         messagebox.showinfo("Success", f"{len(item_ids_to_retry)} item(s) have been re-queued for processing.")
         self.update_dashboard_display()
+
+    def _open_destination_folder(self):
+        profile_name = self.active_profile_name.get()
+        if not profile_name or profile_name not in self.profiles:
+            return
+
+        try:
+            profile_config = self.profiles[profile_name]
+            dest_cfg = profile_config.get('destination', {})
+            
+            if dest_cfg.get('type') == 'local':
+                dest_path = dest_cfg.get('path')
+                if dest_path and os.path.isdir(dest_path):
+                    os.startfile(dest_path)
+                elif dest_path:
+                    messagebox.showwarning("Warning", f"Destination path not found:\n{dest_path}", parent=self)
+                else:
+                    messagebox.showerror("Error", "No destination path configured for this profile.", parent=self)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open folder:\n{e}", parent=self)
 
     def process_log_queue(self):
         try:
