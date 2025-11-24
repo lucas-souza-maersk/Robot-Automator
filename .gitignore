@@ -184,3 +184,4 @@ cython_debug/
 file_gen.py
 EDI-ROBOT/profiles.json
 /EDI-ROBOT/sftp_downloads
+/backup
