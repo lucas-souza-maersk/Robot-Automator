@@ -6,6 +6,7 @@ import hashlib
 import fnmatch
 import pysftp
 import keyring
+import re
 from threading import Thread, Event
 from datetime import datetime, date, timedelta
 
@@ -13,9 +14,7 @@ import data_manager
 import logger_setup
 import alert_manager
 
-
 class BaseWatcher(Thread):
-    """Base class for all watchers (Local, SFTP, etc.)."""
     def __init__(self, profile_config, stop_event, logger, alert_manager):
         super().__init__()
         self.config = profile_config
@@ -50,7 +49,6 @@ class BaseWatcher(Thread):
         return scan_value
 
 class BaseProcessor(Thread):
-    """Base class for all processors."""
     def __init__(self, profile_config, stop_event, logger, alert_manager):
         super().__init__()
         self.config = profile_config
@@ -90,7 +88,6 @@ class BaseProcessor(Thread):
             return None
 
 class LocalWatcher(BaseWatcher):
-    """Watches a local directory for new files."""
     def run(self):
         source_dir = self.config['source']['path']
         db_path = self.config['settings']['db_path']
@@ -125,7 +122,6 @@ class LocalWatcher(BaseWatcher):
         self.logger.info("Local watcher stopped.")
 
 class SftpWatcher(BaseWatcher):
-    """Watches a remote SFTP directory and downloads new files."""
     def run(self):
         source_cfg = self.config['source']
         db_path = self.config['settings']['db_path']
@@ -181,9 +177,20 @@ class SftpWatcher(BaseWatcher):
             self.stop_event.wait(scan_interval)
         self.logger.info("SFTP watcher stopped.")
 
-
 class FileProcessor(BaseProcessor):
-    """Processes files from the queue, moving/copying them to a local or remote destination."""
+    def _extract_and_index_containers(self, record_id, file_path):
+        db_path = self.config['settings']['db_path']
+        try:
+            with open(file_path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+                content = f.read()
+            
+            containers = re.findall(r'[A-Z]{4}[0-9]{7}', content)
+            if containers:
+                data_manager.add_containers_to_index(db_path, record_id, containers)
+                self.logger.info(f"Indexed {len(set(containers))} units for file ID {record_id}.")
+        except Exception as e:
+            self.logger.warning(f"Could not extract units from {file_path}: {e}")
+
     def _process_file(self, record_id, file_path, retry_count):
         db_path = self.config['settings']['db_path']
         action = self.config.get('action', 'copy')
@@ -207,6 +214,8 @@ class FileProcessor(BaseProcessor):
                     f"O arquivo '{filename}' foi detectado como duplicado (baseado no hash) e não será processado."
                 )
                 return
+
+            self._extract_and_index_containers(record_id, file_path)
 
             if dest_type == 'local':
                 self._handle_local_destination(record_id, file_path, file_hash)
@@ -292,9 +301,7 @@ class FileProcessor(BaseProcessor):
             f"O arquivo '{filename}' foi enviado com sucesso para sftp://{username}@{host}{remote_dest_path}"
         )
 
-
 class ServiceManager:
-    """Manages the lifecycle of a single profile's runner thread."""
     def __init__(self, profile_config, main_log_queue):
         self.profile_config = profile_config
         self.runner_thread = None
@@ -306,7 +313,6 @@ class ServiceManager:
         
         alert_cfg = self.profile_config.get('settings', {}).get('alerting', {})
         self.alert_manager = alert_manager.TeamsAlertManager(alert_cfg, self.logger)
-
 
     def start(self):
         if self.is_running():
@@ -342,9 +348,7 @@ class ServiceManager:
     def is_running(self):
         return self.runner_thread and self.runner_thread.is_alive()
 
-
 class ProfileRunner(Thread):
-    """The main thread for a profile, which manages its specific watcher and processor."""
     WATCHER_MAPPING = {
         'local': LocalWatcher,
         'SFTP': SftpWatcher,

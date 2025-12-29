@@ -24,6 +24,15 @@ def initialize_database(db_path):
             )
         ''')
 
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS container_index (
+                id INTEGER PRIMARY KEY,
+                queue_id INTEGER,
+                container_number TEXT,
+                FOREIGN KEY (queue_id) REFERENCES queue (id)
+            )
+        ''')
+
         try:
             cursor.execute("ALTER TABLE queue ADD COLUMN original_path TEXT")
         except sqlite3.OperationalError as e:
@@ -34,6 +43,24 @@ def initialize_database(db_path):
         logging.info(f"Database '{os.path.basename(db_path)}' successfully verified.")
     except Exception as e:
         logging.error(f"Failed to initialize database '{db_path}': {e}")
+    finally:
+        if conn:
+            conn.close()
+
+def get_file_path_by_id(db_path, record_id):
+    if not os.path.exists(db_path): return None
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path, original_path FROM queue WHERE id = ?", (record_id,))
+        row = cursor.fetchone()
+        if row:
+            return row[0] or row[1]
+        return None
+    except Exception as e:
+        logging.error(f"Failed to get file path for ID {record_id}: {e}")
+        return None
     finally:
         if conn:
             conn.close()
@@ -145,17 +172,29 @@ def get_queue_stats(db_path):
         if conn:
             conn.close()
 
-def get_all_queue_items(db_path):
+def get_all_queue_items(db_path, container_filter=None):
     if not os.path.exists(db_path): return []
     conn = None
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT id, status, retry_count, file_path, file_hash, added_at, processed_at, original_path FROM queue ORDER BY added_at DESC")
+        
+        query = '''
+            SELECT q.id, q.status, q.retry_count, q.file_path, q.file_hash, q.added_at, q.processed_at, q.original_path,
+            COALESCE((SELECT GROUP_CONCAT(container_number, ', ') FROM container_index WHERE queue_id = q.id), 'NOT EDI') as units
+            FROM queue q
+        '''
+        
+        if container_filter:
+            query += " JOIN container_index ci ON q.id = ci.queue_id WHERE ci.container_number LIKE ?"
+            cursor.execute(query + " ORDER BY q.added_at DESC", (f"%{container_filter}%",))
+        else:
+            cursor.execute(query + " ORDER BY q.added_at DESC")
+            
         return cursor.fetchall()
     except Exception as e:
         if "no such table" in str(e): return []
-        logging.error(f"Failed to get all items from '{db_path}': {e}")
+        logging.error(f"Failed to get items from '{db_path}': {e}")
         return []
     finally:
         if conn:
@@ -173,6 +212,37 @@ def reset_failed_items(db_path, item_ids):
         conn.commit()
     except Exception as e:
         logging.error(f"Failed to reset items in '{db_path}': {e}")
+    finally:
+        if conn:
+            conn.close()
+
+def force_resend_items(db_path, item_ids):
+    if not item_ids or not os.path.exists(db_path): return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        placeholders = ','.join('?' for _ in item_ids)
+        query = f"UPDATE queue SET status = 'pending', retry_count = 0, file_hash = NULL, processed_at = NULL WHERE id IN ({placeholders})"
+        cursor.execute(query, item_ids)
+        conn.commit()
+    except Exception as e:
+        logging.error(f"Failed to force resend items in '{db_path}': {e}")
+    finally:
+        if conn:
+            conn.close()
+
+def add_containers_to_index(db_path, queue_id, container_list):
+    if not container_list: return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        data = [(queue_id, c) for c in set(container_list)]
+        cursor.executemany("INSERT INTO container_index (queue_id, container_number) VALUES (?, ?)", data)
+        conn.commit()
+    except Exception as e:
+        logging.error(f"Failed to index containers for ID {queue_id} in '{db_path}': {e}")
     finally:
         if conn:
             conn.close()
