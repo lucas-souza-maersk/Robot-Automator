@@ -1,10 +1,10 @@
-# Robot Automator
+# EDI-CONTROL
 
 A robust, profile-based automation engine for APM Terminals, designed to monitor and transfer files between various sources and destinations (including local folders and SFTP servers) based on configurable rules. This tool runs as a reliable Windows Service, ensuring continuous operation for critical data integration tasks.
 
 ## Overview
 
-Robot Automator is a reliable, profile-driven automation engine for APM Terminals Pecém Terminal. It continuously monitors sources and transfers files to destinations according to configurable rules, supporting both local and remote (SFTP) endpoints. It runs seamlessly as a Windows Service to ensure uninterrupted operation of critical workflows.
+EDI Control is a reliable, profile-driven automation engine for APM Terminals Pecém Terminal. It continuously monitors sources and transfers files to destinations according to configurable rules, supporting both local and remote (SFTP) endpoints. It runs seamlessly as a Windows Service to ensure uninterrupted operation of critical workflows.
 
 ## Data Flow & Architecture
 
@@ -69,7 +69,7 @@ The application is deployed as two separate executables: `RoboService.exe` (the 
 
 #### Option 1: Download the Latest Release
 
-1.  Go to the [Robot-Automator Releases](https://github.com/lucas-souza-maersk/Robot-Automator/releases) page.
+1.  Go to the [EDI-CONTROL Releases](https://github.com/lucas-souza-maersk/EDI-CONTROL/releases) page.
 2.  Download the latest package containing both `RoboService.exe` and `RoboUI.exe`.
 3.  Copy the entire folder to a permanent location on the server (e.g., `C:\AutomationService\`).
 
@@ -79,8 +79,8 @@ The application is deployed as two separate executables: `RoboService.exe` (the 
 
 1.  Clone the repository:
     ```bash
-    git clone https://github.com/lucas-souza-maersk/Robot-Automator/
-    cd Robot-Automator
+    git clone https://github.com/lucas-souza-maersk/EDI-CONTROL/
+    cd EDI-CONTROL
     ```
 2.  Install Python dependencies:
     ```bash
@@ -103,7 +103,7 @@ The application is deployed as two separate executables: `RoboService.exe` (the 
 
 1.  Download [NSSM](https://nssm.cc/download).
 2.  Open Command Prompt as **Administrator**.
-3.  Run `nssm install <ServiceName>` (e.g., `nssm install APM_TaskAutomator`).
+3.  Run `nssm install <ServiceName>` (e.g., `nssm install EDI-CONTROL`).
 4.  In the NSSM GUI:
       * **Path**: Full path to `RoboService.exe`.
       * **Startup directory**: Folder containing the executable.
