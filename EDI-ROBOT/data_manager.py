@@ -141,7 +141,7 @@ def update_file_status(db_path, file_id, new_status, increment_retry=False, file
         if new_status == 'sent' and file_hash:
             cursor.execute("UPDATE queue SET status = ?, processed_at = CURRENT_TIMESTAMP, file_hash = ? WHERE id = ?", (new_status, file_hash, file_id))
         elif increment_retry:
-            cursor.execute("UPDATE queue SET status = ?, processed_at = CURRENT_TIMESTAMP, retry_count = retry_count + 1 WHERE id = ?", (new_status, file_id))
+            cursor.execute("UPDATE queue SET status = ?, processed_at = CURRENT_TIMESTAMP, retry_count = CASE WHEN retry_count < 0 THEN 1 ELSE retry_count + 1 END WHERE id = ?", (new_status, file_id))
         else:
             cursor.execute("UPDATE queue SET status = ?, processed_at = CURRENT_TIMESTAMP WHERE id = ?", (new_status, file_id))
         conn.commit()
@@ -223,7 +223,7 @@ def force_resend_items(db_path, item_ids):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         placeholders = ','.join('?' for _ in item_ids)
-        query = f"UPDATE queue SET status = 'pending', retry_count = 0, file_hash = NULL, processed_at = NULL WHERE id IN ({placeholders})"
+        query = f"UPDATE queue SET status = 'pending', retry_count = -1, file_hash = NULL, processed_at = NULL WHERE id IN ({placeholders})"
         cursor.execute(query, item_ids)
         conn.commit()
     except Exception as e:
