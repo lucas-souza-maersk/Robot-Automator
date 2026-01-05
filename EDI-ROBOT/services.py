@@ -6,6 +6,7 @@ import hashlib
 import fnmatch
 import pysftp
 import keyring
+import re
 from threading import Thread, Event
 from datetime import datetime, date, timedelta
 
@@ -13,9 +14,7 @@ import data_manager
 import logger_setup
 import alert_manager
 
-
 class BaseWatcher(Thread):
-    """Base class for all watchers (Local, SFTP, etc.)."""
     def __init__(self, profile_config, stop_event, logger, alert_manager):
         super().__init__()
         self.config = profile_config
@@ -50,7 +49,6 @@ class BaseWatcher(Thread):
         return scan_value
 
 class BaseProcessor(Thread):
-    """Base class for all processors."""
     def __init__(self, profile_config, stop_event, logger, alert_manager):
         super().__init__()
         self.config = profile_config
@@ -90,7 +88,6 @@ class BaseProcessor(Thread):
             return None
 
 class LocalWatcher(BaseWatcher):
-    """Watches a local directory for new files."""
     def run(self):
         source_dir = self.config['source']['path']
         db_path = self.config['settings']['db_path']
@@ -125,7 +122,6 @@ class LocalWatcher(BaseWatcher):
         self.logger.info("Local watcher stopped.")
 
 class SftpWatcher(BaseWatcher):
-    """Watches a remote SFTP directory and downloads new files."""
     def run(self):
         source_cfg = self.config['source']
         db_path = self.config['settings']['db_path']
@@ -174,16 +170,65 @@ class SftpWatcher(BaseWatcher):
                 self.logger.error(f"Error in SFTP watcher: {e}", exc_info=True)
                 self.alert_manager.send(
                     "WARNING", 
-                    f"Erro no Watcher SFTP - Perfil: {self.config['name']}",
-                    f"Ocorreu um erro ao tentar conectar ou listar arquivos em {username}@{host}. O watcher tentará novamente. Erro: {e}"
+                    f"SFTP Watcher Error - Profile: {self.config['name']}",
+                    f"Error connecting or listing files at {username}@{host}. Error: {e}"
                 )
             
             self.stop_event.wait(scan_interval)
         self.logger.info("SFTP watcher stopped.")
 
-
 class FileProcessor(BaseProcessor):
-    """Processes files from the queue, moving/copying them to a local or remote destination."""
+    def _extract_and_index_containers(self, record_id, file_path):
+        db_path = self.config['settings']['db_path']
+        try:
+            with open(file_path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+                content = f.read()
+            
+            containers = re.findall(r'[A-Z]{4}[0-9]{7}', content)
+            if containers:
+                data_manager.add_containers_to_index(db_path, record_id, containers)
+                self.logger.info(f"Indexed {len(set(containers))} units for file ID {record_id}.")
+        except Exception as e:
+            self.logger.warning(f"Could not extract units from {file_path}: {e}")
+
+    def _handle_backup(self, file_path):
+        backup_cfg = self.config['settings'].get('backup', {})
+        enabled = backup_cfg.get('enabled')
+        path = backup_cfg.get('path')
+
+        if enabled and path:
+            try:
+                backup_dir = path.strip().replace('"', '') 
+                if not os.path.isdir(backup_dir):
+                    os.makedirs(backup_dir, exist_ok=True)
+                
+                filename = os.path.basename(file_path)
+                backup_dest = os.path.join(backup_dir, filename)
+                
+                shutil.copy2(file_path, backup_dest)
+                self.logger.info(f"Backup created successfully for '{filename}' in '{backup_dir}'")
+            except Exception as e:
+                self.logger.warning(f"Failed to create backup for '{file_path}': {e}")
+
+    def _resolve_missing_file(self, original_path):
+        filename = os.path.basename(original_path)
+        
+        backup_cfg = self.config['settings'].get('backup', {})
+        if backup_cfg.get('enabled') and backup_cfg.get('path'):
+            backup_path = os.path.join(backup_cfg['path'].strip().replace('"', ''), filename)
+            if os.path.exists(backup_path):
+                self.logger.info(f"Recovered missing file from backup: {backup_path}")
+                return backup_path
+
+        dest_cfg = self.config.get('destination', {})
+        if dest_cfg.get('type') == 'local':
+            dest_path = os.path.join(dest_cfg.get('path', ''), filename)
+            if os.path.exists(dest_path):
+                self.logger.info(f"Recovered missing file from destination: {dest_path}")
+                return dest_path
+        
+        return None
+
     def _process_file(self, record_id, file_path, retry_count):
         db_path = self.config['settings']['db_path']
         action = self.config.get('action', 'copy')
@@ -192,21 +237,31 @@ class FileProcessor(BaseProcessor):
         
         filename = os.path.basename(file_path or "N/A")
         profile_name = self.config['name']
+        is_recovered_file = False
 
         try:
             if not os.path.exists(file_path):
-                raise FileNotFoundError(f"File to process not found: {file_path}")
+                recovered_path = self._resolve_missing_file(file_path)
+                if recovered_path:
+                    file_path = recovered_path
+                    is_recovered_file = True
+                else:
+                    raise FileNotFoundError(f"File to process not found at path: {file_path}")
 
             file_hash = self._calculate_hash(file_path)
-            if data_manager.hash_exists(db_path, file_hash):
+            is_forced = (retry_count == -1)
+
+            if not is_forced and data_manager.hash_exists(db_path, file_hash):
                 self.logger.warning(f"Duplicate file detected by hash: {filename}. Marking as duplicate.")
                 data_manager.update_file_status(db_path, record_id, 'duplicate', file_hash=file_hash)
                 self.alert_manager.send(
                     "WARNING",
-                    f"Arquivo Duplicado - Perfil: {profile_name}",
-                    f"O arquivo '{filename}' foi detectado como duplicado (baseado no hash) e não será processado."
+                    f"Duplicate File - Profile: {profile_name}",
+                    f"File '{filename}' was detected as duplicate and will not be processed."
                 )
                 return
+
+            self._extract_and_index_containers(record_id, file_path)
 
             if dest_type == 'local':
                 self._handle_local_destination(record_id, file_path, file_hash)
@@ -215,27 +270,34 @@ class FileProcessor(BaseProcessor):
             else:
                 raise NotImplementedError(f"Destination type '{dest_type}' is not supported.")
 
+            if not is_recovered_file or (is_recovered_file and "backup" not in file_path.lower()):
+                 self._handle_backup(file_path)
+
             if action == 'move':
-                try:
-                    os.remove(file_path)
-                except Exception as e:
-                    self.logger.warning(f"Could not remove source file after move: {e}")
+                if not is_recovered_file:
+                    try:
+                        os.remove(file_path)
+                    except Exception as e:
+                        self.logger.warning(f"Could not remove source file after move: {e}")
 
         except Exception as e:
             self.logger.error(f"Failed to process file ID {record_id} ({filename}): {e}", exc_info=True)
-            if retry_count + 1 >= 5:
+            
+            new_retry = 0 if retry_count < 0 else retry_count + 1
+            
+            if new_retry >= 5:
                 data_manager.update_file_status(db_path, record_id, 'failed', increment_retry=True)
                 self.alert_manager.send(
                     "CRITICAL",
-                    f"Falha Permanente de Arquivo - Perfil: {profile_name}",
-                    f"O arquivo '{filename}' falhou o processamento 5 vezes e foi movido para 'failed'. Último Erro: {e}"
+                    f"Permanent File Failure - Profile: {profile_name}",
+                    f"File '{filename}' failed processing 5 times. Last Error: {e}"
                 )
             else:
                 data_manager.update_file_status(db_path, record_id, 'pending', increment_retry=True)
                 self.alert_manager.send(
                     "WARNING",
-                    f"Falha de Processamento - Perfil: {profile_name}",
-                    f"O arquivo '{filename}' falhou na tentativa {retry_count + 1}/5. Será tentado novamente. Erro: {e}"
+                    f"Processing Failure - Profile: {profile_name}",
+                    f"File '{filename}' failed (Attempt {new_retry}/5). Error: {e}"
                 )
 
     def _handle_local_destination(self, record_id, file_path, file_hash):
@@ -249,18 +311,16 @@ class FileProcessor(BaseProcessor):
             
         dest_path = os.path.join(dest_dir, filename)
 
-        if action == 'move' and self.config['source']['type'] == 'local':
-            shutil.move(file_path, dest_path)
-        else:
-            shutil.copy(file_path, dest_path)
+        if os.path.abspath(file_path) != os.path.abspath(dest_path):
+            shutil.copy2(file_path, dest_path)
         
         self.logger.info(f"File ID {record_id} successfully processed to local destination.")
         data_manager.update_file_status(db_path, record_id, 'sent', file_hash=file_hash)
         
         self.alert_manager.send(
             "INFO",
-            f"Arquivo Processado - Perfil: {self.config['name']}",
-            f"O arquivo '{filename}' foi processado com sucesso para o destino local: {dest_dir}"
+            f"File Processed - Profile: {self.config['name']}",
+            f"File '{filename}' processed successfully to local destination: {dest_dir}"
         )
 
     def _handle_sftp_destination(self, record_id, file_path, file_hash):
@@ -288,13 +348,11 @@ class FileProcessor(BaseProcessor):
 
         self.alert_manager.send(
             "INFO",
-            f"Arquivo Enviado (SFTP) - Perfil: {self.config['name']}",
-            f"O arquivo '{filename}' foi enviado com sucesso para sftp://{username}@{host}{remote_dest_path}"
+            f"File Sent (SFTP) - Profile: {self.config['name']}",
+            f"File '{filename}' sent successfully to sftp://{username}@{host}{remote_dest_path}"
         )
 
-
 class ServiceManager:
-    """Manages the lifecycle of a single profile's runner thread."""
     def __init__(self, profile_config, main_log_queue):
         self.profile_config = profile_config
         self.runner_thread = None
@@ -306,7 +364,6 @@ class ServiceManager:
         
         alert_cfg = self.profile_config.get('settings', {}).get('alerting', {})
         self.alert_manager = alert_manager.TeamsAlertManager(alert_cfg, self.logger)
-
 
     def start(self):
         if self.is_running():
@@ -342,9 +399,7 @@ class ServiceManager:
     def is_running(self):
         return self.runner_thread and self.runner_thread.is_alive()
 
-
 class ProfileRunner(Thread):
-    """The main thread for a profile, which manages its specific watcher and processor."""
     WATCHER_MAPPING = {
         'local': LocalWatcher,
         'SFTP': SftpWatcher,
@@ -389,8 +444,8 @@ class ProfileRunner(Thread):
                 thread_name = "Watcher" if not watcher.is_alive() else "Processor"
                 self.alert_manager.send(
                     "CRITICAL",
-                    f"Crash de Thread - Perfil: {self.config['name']}",
-                    f"A thread crítica '{thread_name}' morreu inesperadamente. O perfil '{self.config['name']}' será interrompido e reiniciado pelo serviço principal."
+                    f"Thread Crash - Profile: {self.config['name']}",
+                    f"Critical thread '{thread_name}' died unexpectedly. Profile '{self.config['name']}' will be restarted."
                 )
                 self.stop_event.set()
             self.stop_event.wait(5)

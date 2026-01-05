@@ -336,7 +336,7 @@ class ProfileEditor(tk.Toplevel):
         
         self.title("Create / Edit Profile")
         self.resizable(False, False)
-        self.geometry("600x800") 
+        self.geometry("600x850") 
         self.grab_set()
         if icon_path:
             try: self.iconbitmap(icon_path)
@@ -347,6 +347,7 @@ class ProfileEditor(tk.Toplevel):
         self._load_profile_data()
         self._update_ui_for_types()
         self._toggle_alert_frame()
+        self._toggle_backup_frame()
         self._center_window()
 
     def _setup_vars(self):
@@ -365,6 +366,9 @@ class ProfileEditor(tk.Toplevel):
         self.scan_interval_value = tk.IntVar(value=5)
         self.scan_interval_unit = tk.StringVar(value="s")
         self.remote_config = {}
+
+        self.backup_enabled = tk.BooleanVar(value=False)
+        self.backup_path = tk.StringVar()
 
         self.alert_enabled = tk.BooleanVar(value=False)
         self.alert_webhook_url = tk.StringVar()
@@ -403,10 +407,24 @@ class ProfileEditor(tk.Toplevel):
         self._create_path_entry(self.dest_local_frame, "Local Path (Output):", self.dest_local_path)
         ttk.Label(self.source_remote_frame, text="Configure connection details via 'Setup Connection(s)' button.").pack()
         ttk.Label(self.dest_remote_frame, text="Configure connection details via 'Setup Connection(s)' button.").pack()
+        
         control_frame = ttk.LabelFrame(main_frame, text="Control Files", padding=10)
         control_frame.pack(fill=tk.X, pady=10)
         self._create_path_entry(control_frame, "Database File (Queue):", self.db_path, is_file=True, ext=".db")
         self._create_path_entry(control_frame, "Profile Log File:", self.log_path, is_file=True, ext=".log", pady=(5,0))
+        
+        # Backup Frame
+        backup_frame = ttk.LabelFrame(main_frame, text="Backup Settings", padding=10)
+        backup_frame.pack(fill=tk.X, pady=10)
+        backup_frame.columnconfigure(1, weight=1)
+        
+        ttk.Checkbutton(backup_frame, text="Enable Local Backup (Copy successful files)", variable=self.backup_enabled, command=self._toggle_backup_frame).grid(row=0, column=0, columnspan=2, sticky='w', pady=(0,5))
+        
+        self.backup_widgets_frame = ttk.Frame(backup_frame)
+        self.backup_widgets_frame.grid(row=1, column=0, columnspan=3, sticky='ew')
+        self.backup_widgets_frame.columnconfigure(1, weight=1)
+        self._create_path_entry(self.backup_widgets_frame, "Backup Folder:", self.backup_path)
+
         settings_frame = ttk.LabelFrame(main_frame, text="File Settings", padding=10)
         settings_frame.pack(fill=tk.X, pady=10)
         ttk.Label(settings_frame, text="File Format (patterns separated by comma):").grid(row=0, column=0, columnspan=4, sticky='w', pady=(0, 5))
@@ -450,6 +468,12 @@ class ProfileEditor(tk.Toplevel):
             self.alert_widgets_frame.grid(row=1, column=0, columnspan=2, sticky='ew')
         else:
             self.alert_widgets_frame.grid_forget()
+
+    def _toggle_backup_frame(self, *args):
+        if self.backup_enabled.get():
+            self.backup_widgets_frame.grid(row=1, column=0, columnspan=3, sticky='ew')
+        else:
+            self.backup_widgets_frame.grid_forget()
 
     def _create_path_entry(self, parent, label_text, var, is_file=False, ext="", pady=0):
         parent.columnconfigure(1, weight=1)
@@ -527,6 +551,10 @@ class ProfileEditor(tk.Toplevel):
         self.scan_interval_value.set(interval.get('value', 5))
         self.scan_interval_unit.set(interval.get('unit', 's'))
         
+        backup_cfg = settings.get('backup', {})
+        self.backup_enabled.set(backup_cfg.get('enabled', False))
+        self.backup_path.set(backup_cfg.get('path', ''))
+
         alert_cfg = settings.get('alerting', {})
         self.alert_enabled.set(alert_cfg.get('enabled', False))
         self.alert_webhook_url.set(alert_cfg.get('webhook_url', ''))
@@ -547,6 +575,10 @@ class ProfileEditor(tk.Toplevel):
         if self.alert_enabled.get() and not self.alert_webhook_url.get().strip():
              messagebox.showerror("Validation Error", "Teams Webhook URL is required when alerts are enabled.", parent=self)
              return
+        
+        if self.backup_enabled.get() and not self.backup_path.get().strip():
+            messagebox.showerror("Validation Error", "Backup folder path is required if backup is enabled.", parent=self)
+            return
 
         source = {'type': self.source_type.get()}
         if source['type'] == 'local':
@@ -582,6 +614,10 @@ class ProfileEditor(tk.Toplevel):
                 'file_format': self.file_format.get(),
                 'file_age': {'value': self.file_age_value.get(), 'unit': self.file_age_unit.get()},
                 'scan_interval': {'value': self.scan_interval_value.get(), 'unit': self.scan_interval_unit.get()},
+                'backup': {
+                    'enabled': self.backup_enabled.get(),
+                    'path': self.backup_path.get().strip()
+                },
                 'alerting': {
                     'enabled': self.alert_enabled.get(),
                     'webhook_url': self.alert_webhook_url.get().strip(),
