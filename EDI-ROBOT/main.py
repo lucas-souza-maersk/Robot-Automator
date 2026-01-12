@@ -30,32 +30,32 @@ class FileViewerDialog(tk.Toplevel):
         self.title(f"EDI Viewer - {os.path.basename(file_path)}")
         self.geometry("900x650")
         self.transient(parent)
-        
+
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(expand=True, fill=tk.BOTH)
-        
+
         header_frame = ttk.Frame(main_frame)
         header_frame.pack(fill=tk.X, pady=(0, 10))
-        
+
         info_label = ttk.Label(header_frame, text=f"File: {file_path}", font=("Segoe UI", 9, "italic"))
         info_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
+
         ttk.Button(header_frame, text="Open in Folder", command=self._open_in_explorer, style="Accent.TButton").pack(side=tk.RIGHT, padx=5)
-        
+
         self.text_area = scrolledtext.ScrolledText(main_frame, wrap=tk.NONE, font=("Consolas", 10))
         self.text_area.pack(expand=True, fill=tk.BOTH)
-        
+
         try:
             with open(file_path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                 content = f.read()
-            
+
             self.text_area.insert(tk.END, content)
             self.text_area.configure(state='disabled')
-            
+
             if highlight_text and highlight_text != "NOT EDI":
                 units = [u.strip() for u in highlight_text.split(',')]
                 self._highlight_units(units)
-                
+
         except Exception as e:
             messagebox.showerror("Error", f"Could not read file: {e}")
             self.destroy()
@@ -73,21 +73,21 @@ class FileViewerDialog(tk.Toplevel):
     def _highlight_units(self, units):
         self.text_area.tag_configure("highlight", background="yellow", foreground="black")
         first_match_index = None
-        
+
         for unit in units:
             start_pos = "1.0"
             while True:
                 start_pos = self.text_area.search(unit, start_pos, stopindex=tk.END)
                 if not start_pos:
                     break
-                
+
                 if first_match_index is None:
                     first_match_index = start_pos
-                
+
                 end_pos = f"{start_pos}+{len(unit)}c"
                 self.text_area.tag_add("highlight", start_pos, end_pos)
                 start_pos = end_pos
-        
+
         if first_match_index:
             self.text_area.see(first_match_index)
 
@@ -144,7 +144,7 @@ class CustomClosingDialog(tk.Toplevel):
 class MainApplication(tk.Tk):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        
+
         self.profiles = config_manager.load_profiles()
         self.active_profile_name = tk.StringVar()
         self.search_container_var = tk.StringVar()
@@ -152,7 +152,7 @@ class MainApplication(tk.Tk):
         self.title("Robo Automator - Control Panel")
         self.geometry("950x750")
         self.minsize(900, 700)
-        
+
         try:
             self.icon_path = resource_path("apm.ico")
             self.iconbitmap(self.icon_path)
@@ -164,11 +164,11 @@ class MainApplication(tk.Tk):
         logger_setup.setup_main_logger(self.log_queue)
 
         self.setup_ui()
-        
+
         self.update_profile_dropdown()
         self.after(100, self.process_log_queue)
         self.after(3000, self.update_dashboard_loop)
-        
+
         self.protocol("WM_DELETE_WINDOW", self.on_closing) 
         self.setup_system_tray()
         logging.info("Configuration Application Initialized.")
@@ -298,7 +298,7 @@ class MainApplication(tk.Tk):
             self.duplicate_count_var.set(stats.get('duplicate', 0))
 
             search_term = self.search_container_var.get().strip()
-            
+
             if search_term or not self.queue_tree.selection():
                 for i in self.queue_tree.get_children(): self.queue_tree.delete(i)
                 items = data_manager.get_all_queue_items(db_path, container_filter=search_term if search_term else None)
@@ -308,14 +308,14 @@ class MainApplication(tk.Tk):
                     hash_display = (file_hash[:10] + '...') if file_hash else "N/A"
                     display_item = (item_id, status, retries, filename, units, hash_display, added, processed or "N/A")
                     self.queue_tree.insert("", "end", values=display_item)
-            
+
     def setup_dashboard(self):
         main_status_frame = ttk.Frame(self.dashboard_frame, padding=(0, 0, 0, 10))
         main_status_frame.pack(fill='x')
         self.main_service_status_var = tk.StringVar()
         self.main_service_status_label = ttk.Label(main_status_frame, textvariable=self.main_service_status_var, font=("Segoe UI", 10, "bold"), anchor='center')
         self.main_service_status_label.pack(fill='x')
-        
+
         top_frame = ttk.Frame(self.dashboard_frame)
         top_frame.pack(fill='x', pady=(0, 10))
         ttk.Label(top_frame, text="Monitor Profile:").pack(side='left', padx=(0, 5))
@@ -330,7 +330,7 @@ class MainApplication(tk.Tk):
         self.profile_status_var = tk.StringVar()
         self.queue_count_var = tk.IntVar(); self.sent_count_var = tk.IntVar()
         self.failed_count_var = tk.IntVar(); self.duplicate_count_var = tk.IntVar()
-        
+
         ttk.Label(status_panel, text="Profile Status:", font=status_font).grid(row=0, column=0, sticky="w")
         self.profile_status_label = ttk.Label(status_panel, textvariable=self.profile_status_var, font=status_value_font)
         self.profile_status_label.grid(row=0, column=1, sticky="w", padx=5, columnspan=3)
@@ -345,7 +345,7 @@ class MainApplication(tk.Tk):
 
         queue_panel = ttk.LabelFrame(self.dashboard_frame, text="Queue Monitor", padding="10")
         queue_panel.pack(fill="both", expand=True, pady=10)
-        
+
         search_frame = ttk.Frame(queue_panel)
         search_frame.pack(fill='x', pady=(0, 10))
         ttk.Label(search_frame, text="Search Unit:").pack(side='left', padx=(0, 5))
@@ -362,15 +362,15 @@ class MainApplication(tk.Tk):
         self.queue_tree.column("Hash", width=120)
         self.queue_tree.column("Added", width=140)
         self.queue_tree.column("Processed", width=140)
-        
+
         self.queue_tree.bind("<Double-1>", self.on_item_double_click)
-        
+
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.queue_tree.yview)
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.queue_tree.xview)
         self.queue_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         self.queue_tree.grid(row=0, column=0, sticky='nsew'); vsb.grid(row=0, column=1, sticky='ns'); hsb.grid(row=1, column=0, sticky='ew')
         tree_frame.grid_rowconfigure(0, weight=1); tree_frame.grid_columnconfigure(0, weight=1)
-        
+
         button_frame = ttk.Frame(queue_panel); button_frame.pack(fill='x', pady=(10, 0))
         ttk.Button(button_frame, text="Refresh Queue", command=self.update_dashboard_display).pack(side="left", padx=5)
         ttk.Button(button_frame, text="Retry Failed", command=self.retry_selected_failed_items).pack(side="left", padx=5)
@@ -381,30 +381,26 @@ class MainApplication(tk.Tk):
     def on_item_double_click(self, event):
         item = self.queue_tree.selection()
         if not item: return
-        
+
         item_values = self.queue_tree.item(item, "values")
         record_id = item_values[0]
         units_text = item_values[4]
-        
+
         profile_name = self.active_profile_name.get()
         if not profile_name: return
-        
+
         profile_config = self.profiles[profile_name]
         db_path = profile_config.get('settings', {}).get('db_path')
-        
-        # 1. Tenta pegar o caminho original do banco
+
         source_path = data_manager.get_file_path_by_id(db_path, record_id)
         if not source_path: return
 
-        # 2. Estratégia "Sherlock Holmes": Procura o arquivo em todas as pastas possíveis
         file_found = None
         filename = os.path.basename(source_path)
 
-        # A) Verifica na Origem
         if os.path.exists(source_path):
             file_found = source_path
-        
-        # B) Verifica no Destino (apenas se for local)
+
         if not file_found:
             dest_cfg = profile_config.get('destination', {})
             if dest_cfg.get('type') == 'local':
@@ -412,7 +408,6 @@ class MainApplication(tk.Tk):
                 if os.path.exists(possible_dest):
                     file_found = possible_dest
 
-        # C) Verifica no Backup (se estiver habilitado)
         if not file_found:
             backup_cfg = profile_config.get('settings', {}).get('backup', {})
             if backup_cfg.get('enabled') and backup_cfg.get('path'):
@@ -510,7 +505,7 @@ class MainApplication(tk.Tk):
             config_manager.save_profiles(self.profiles)
             self.update_profile_listbox(); self.update_profile_dropdown()
             messagebox.showinfo("Success", f"Profile '{profile_name}' deleted.")
-    
+
     def retry_selected_failed_items(self):
         profile_name = self.active_profile_name.get()
         if not profile_name: return
@@ -541,7 +536,7 @@ class MainApplication(tk.Tk):
         if not selected_items:
             messagebox.showinfo("Information", "No items selected.", parent=self)
             return
-        
+
         if not messagebox.askyesno("Confirm Resend", "This will force the robot to send the selected file(s) again, even if they were successfully sent before. Continue?", parent=self):
             return
 
