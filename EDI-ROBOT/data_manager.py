@@ -246,3 +246,45 @@ def add_containers_to_index(db_path, queue_id, container_list):
     finally:
         if conn:
             conn.close()
+
+# --- CORREÇÃO: Função get_file_details usando sqlite3.connect direto ---
+def get_file_details(db_path, file_id):
+    """Retorna os detalhes de um arquivo específico pelo ID."""
+    if not os.path.exists(db_path): return None
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        # file_path is index 3, original_path is index 7
+        cursor.execute("SELECT id, status, retries, file_path, file_hash, added_at, processed_at, original_path FROM queue WHERE id = ?", (file_id,))
+        row = cursor.fetchone()
+        
+        units = "N/A"
+        # Tenta pegar as unidades em uma query separada para garantir
+        try:
+            cursor.execute("SELECT GROUP_CONCAT(container_number, ', ') FROM container_index WHERE queue_id = ?", (file_id,))
+            u_row = cursor.fetchone()
+            if u_row and u_row[0]:
+                units = u_row[0]
+        except:
+            pass
+
+        if row:
+            return {
+                "id": row[0],
+                "status": row[1],
+                "retries": row[2],
+                "file_path": row[3],
+                "hash": row[4],
+                "added_at": row[5],
+                "processed_at": row[6],
+                "original_path": row[7],
+                "units": units
+            }
+        return None
+    except Exception as e:
+        logging.error(f"Error fetching file details for ID {file_id}: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()

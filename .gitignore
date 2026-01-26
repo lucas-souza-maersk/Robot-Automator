@@ -188,3 +188,5 @@ EDI-ROBOT/profiles.json
 /EDI-ROBOT/sftp_downloads
 /backup
 profiles.json
+EDI-ROBOT/production_main.py
+/EDI-ROBOT/web_ui
