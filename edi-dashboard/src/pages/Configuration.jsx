@@ -1,33 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Card, Form, Input, Button, Switch, Select, 
-  message, Popconfirm, Row, Col, Divider, Modal, List, InputNumber 
+  message, Popconfirm, Row, Col, Divider, Modal, List, InputNumber, Radio, Tooltip 
 } from 'antd';
 import { 
-  SaveOutlined, PlusOutlined, DeleteOutlined, 
+  SaveOutlined, PlusOutlined, DeleteOutlined, EditOutlined,
   FolderOpenOutlined, RobotOutlined, EyeOutlined,
-  CloudServerOutlined, HddOutlined, DatabaseOutlined, FileTextOutlined
+  CloudServerOutlined, HddOutlined, DatabaseOutlined, FileTextOutlined,
+  SendOutlined, InfoCircleOutlined
 } from '@ant-design/icons';
 import MainLayout from '../components/MainLayout';
 import FileBrowserModal from '../components/FileBrowserModal';
 import api from '../services/api';
-import { useLanguage } from '../contexts/LanguageContext'; // Importando tradução
+import { useLanguage } from '../contexts/LanguageContext';
 
 const { Option } = Select;
 
 const Configuration = () => {
-  const { t } = useLanguage(); // Hook de tradução
+  const { t } = useLanguage();
   const [profiles, setProfiles] = useState({});
   const [activeProfile, setActiveProfile] = useState(null);
   const [loading, setLoading] = useState(false);
-  
-  // Browser State
+
+  const [renameModalVisible, setRenameModalVisible] = useState(false);
+  const [newProfileName, setNewProfileName] = useState('');
+
+  // browser state
   const [browserVisible, setBrowserVisible] = useState(false);
   const [browserField, setBrowserField] = useState(null);
   const [browserConnectionType, setBrowserConnectionType] = useState('local');
   const [browserConfig, setBrowserConfig] = useState({});
   
-  // Preview State
+  // preview state
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewFiles, setPreviewFiles] = useState([]);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -37,6 +41,7 @@ const Configuration = () => {
   const sourceType = Form.useWatch(['source', 'type'], form);
   const destType = Form.useWatch(['destination', 'type'], form);
   const backupEnabled = Form.useWatch(['settings', 'backup', 'enabled'], form);
+  const mode = Form.useWatch('mode', form);
 
   useEffect(() => {
     loadProfiles();
@@ -76,11 +81,42 @@ const Configuration = () => {
     }
   };
 
+  const openRenameModal = () => {
+    setNewProfileName(activeProfile);
+    setRenameModalVisible(true);
+  };
+
+  const handleRename = async () => {
+    const trimmedName = newProfileName.trim();
+    if (!trimmedName) return message.warning('Profile name cannot be empty');
+    if (trimmedName === activeProfile) return setRenameModalVisible(false);
+    if (profiles[trimmedName]) return message.error('A profile with this name already exists');
+
+    setLoading(true);
+    try {
+      const updatedProfiles = { ...profiles };
+      updatedProfiles[trimmedName] = { ...updatedProfiles[activeProfile], name: trimmedName };
+      delete updatedProfiles[activeProfile];
+
+      await api.post('/profiles', { profiles: updatedProfiles });
+      
+      setProfiles(updatedProfiles);
+      setActiveProfile(trimmedName);
+      setRenameModalVisible(false);
+      message.success(`Renamed to ${trimmedName}`);
+    } catch (error) {
+      message.error('Failed to rename profile');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const createNewProfile = () => {
     const name = `Profile_${Object.keys(profiles).length + 1}`;
     const newProfile = {
       name: name,
       enabled: false,
+      mode: 'sender',
       action: 'copy',
       source: { type: 'local', path: '' },
       destination: { type: 'local', path: '' },
@@ -113,7 +149,6 @@ const Configuration = () => {
     }
   };
 
-  // --- File Browser Logic ---
   const openBrowser = (fieldIdentifier, type = 'local', sectionPrefix = null) => {
     setBrowserField(fieldIdentifier);
     setBrowserConnectionType(type);
@@ -147,14 +182,6 @@ const Configuration = () => {
 
   const getInitialBrowserPath = () => {
     if (browserField === 'source') return form.getFieldValue(['source', 'path']);
-    if (browserField === 'source_remote') return form.getFieldValue(['source', 'remote_path']);
-    if (browserField === 'destination') return form.getFieldValue(['destination', 'path']);
-    if (browserField === 'destination_remote') return form.getFieldValue(['destination', 'remote_path']);
-    if (browserField === 'backup') return form.getFieldValue(['settings', 'backup', 'path']);
-    if (browserField === 'db') {
-        const val = form.getFieldValue(['settings', 'db_path']);
-        return val ? val.substring(0, val.lastIndexOf('/')) : '';
-    }
     return '';
   };
 
@@ -180,10 +207,8 @@ const Configuration = () => {
     }
   };
 
-  // --- Render Helpers ---
   const renderLocationFields = (prefix, type) => {
     const isSFTP = type === 'SFTP';
-    
     if (isSFTP) {
       return (
         <>
@@ -216,18 +241,13 @@ const Configuration = () => {
                 <Form.Item name={[prefix, 'remote_path']} noStyle rules={[{required: true}]}>
                     <Input style={{ width: 'calc(100% - 32px)' }} placeholder="/home/user/input" />
                 </Form.Item>
-                <Button 
-                    icon={<FolderOpenOutlined />} 
-                    onClick={() => openBrowser(`${prefix}_remote`, 'SFTP', prefix)} 
-                    title="Browse SFTP Server"
-                />
+                <Button icon={<FolderOpenOutlined />} onClick={() => openBrowser(`${prefix}_remote`, 'SFTP', prefix)} title="Browse SFTP Server" />
             </Input.Group>
           </Form.Item>
         </>
       );
     }
     
-    // Local / SMB
     return (
       <Form.Item label={t('local_path')}>
         <Input.Group compact style={{ display: 'flex' }}>
@@ -290,11 +310,29 @@ const Configuration = () => {
                   <Form.Item name="enabled" valuePropName="checked" noStyle>
                     <Switch checkedChildren={t('active_status')} unCheckedChildren={t('paused_status')} />
                   </Form.Item>
+                  
+                  <Tooltip title="Rename Profile">
+                    <Button type="text" icon={<EditOutlined />} onClick={openRenameModal} style={{ marginLeft: 10 }} />
+                  </Tooltip>
+
                   <Popconfirm title={t('confirm_delete')} onConfirm={deleteProfile}>
-                    <Button danger type="text" icon={<DeleteOutlined />} style={{ marginLeft: 10 }}>{t('delete')}</Button>
+                    <Button danger type="text" icon={<DeleteOutlined />} style={{ marginLeft: 5 }}>{t('delete')}</Button>
                   </Popconfirm>
                 </Col>
               </Row>
+            </Card>
+
+            <Card title={<span><InfoCircleOutlined /> Operation Mode</span>} style={{ marginBottom: 20 }} size="small">
+              <Form.Item name="mode" initialValue="sender" style={{ marginBottom: 0 }}>
+                <Radio.Group buttonStyle="solid" style={{ width: '100%' }}>
+                  <Radio.Button value="sender" style={{ width: '50%', textAlign: 'center' }}>
+                    <SendOutlined /> <b>Sender Mode</b> (Move & Send)
+                  </Radio.Button>
+                  <Radio.Button value="visualizer" style={{ width: '50%', textAlign: 'center' }}>
+                    <EyeOutlined /> <b>Visualizer Mode</b> (Monitor Only)
+                  </Radio.Button>
+                </Radio.Group>
+              </Form.Item>
             </Card>
 
             <Row gutter={20}>
@@ -343,9 +381,9 @@ const Configuration = () => {
                   </Form.Item>
                 </Col>
                 <Col span={6}>
-                   <Form.Item label={t('scan_int')} name={['settings', 'scan_interval', 'value']}>
-                     <InputNumber min={1} style={{ width: '100%' }} />
-                   </Form.Item>
+                    <Form.Item label={t('scan_int')} name={['settings', 'scan_interval', 'value']}>
+                      <InputNumber min={1} style={{ width: '100%' }} />
+                    </Form.Item>
                 </Col>
               </Row>
 
@@ -431,6 +469,22 @@ const Configuration = () => {
           style={{ maxHeight: 300, overflowY: 'auto' }}
         />
       </Modal>
+
+      <Modal 
+        title="Rename Profile" 
+        open={renameModalVisible} 
+        onOk={handleRename} 
+        onCancel={() => setRenameModalVisible(false)}
+        confirmLoading={loading}
+      >
+        <Input 
+          placeholder="New Profile Name" 
+          value={newProfileName} 
+          onChange={(e) => setNewProfileName(e.target.value)} 
+          onPressEnter={handleRename}
+        />
+      </Modal>
+
     </MainLayout>
   );
 };

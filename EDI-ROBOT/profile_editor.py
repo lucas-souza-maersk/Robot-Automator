@@ -413,7 +413,6 @@ class ProfileEditor(tk.Toplevel):
         self._create_path_entry(control_frame, "Database File (Queue):", self.db_path, is_file=True, ext=".db")
         self._create_path_entry(control_frame, "Profile Log File:", self.log_path, is_file=True, ext=".log", pady=(5,0))
         
-        # Backup Frame
         backup_frame = ttk.LabelFrame(main_frame, text="Backup Settings", padding=10)
         backup_frame.pack(fill=tk.X, pady=10)
         backup_frame.columnconfigure(1, weight=1)

@@ -392,19 +392,15 @@ class MainApplication(tk.Tk):
         profile_config = self.profiles[profile_name]
         db_path = profile_config.get('settings', {}).get('db_path')
         
-        # 1. Tenta pegar o caminho original do banco
         source_path = data_manager.get_file_path_by_id(db_path, record_id)
         if not source_path: return
 
-        # 2. Estratégia "Sherlock Holmes": Procura o arquivo em todas as pastas possíveis
         file_found = None
         filename = os.path.basename(source_path)
 
-        # A) Verifica na Origem
         if os.path.exists(source_path):
             file_found = source_path
         
-        # B) Verifica no Destino (apenas se for local)
         if not file_found:
             dest_cfg = profile_config.get('destination', {})
             if dest_cfg.get('type') == 'local':
@@ -412,7 +408,6 @@ class MainApplication(tk.Tk):
                 if os.path.exists(possible_dest):
                     file_found = possible_dest
 
-        # C) Verifica no Backup (se estiver habilitado)
         if not file_found:
             backup_cfg = profile_config.get('settings', {}).get('backup', {})
             if backup_cfg.get('enabled') and backup_cfg.get('path'):

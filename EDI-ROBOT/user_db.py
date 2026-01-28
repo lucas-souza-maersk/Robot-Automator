@@ -50,7 +50,7 @@ def create_user(username, password, role="viewer", full_name=""):
     return True
 
 def delete_user(username):
-    if username == "admin": return False # Protege o admin principal
+    if username == "admin": return False
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("DELETE FROM users WHERE username = ?", (username,))
@@ -60,8 +60,8 @@ def delete_user(username):
 
 def create_default_admin():
     if not get_user("admin"):
-        create_user("admin", "admin123", role="admin", full_name="System Administrator")
-        print("Default admin created: user='admin', pass='admin123'")
+        create_user("admin", "Brpec10@", role="admin", full_name="System Administrator")
+        print("default admin created: user='admin', password='Brpec10@'")
 
 if __name__ == "__main__":
     init_user_db()

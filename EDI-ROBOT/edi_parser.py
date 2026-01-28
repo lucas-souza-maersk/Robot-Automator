@@ -4,11 +4,9 @@ from datetime import datetime
 class EdiParser:
     def __init__(self, content):
         self.raw_content = content
-        # Limpa quebras de linha para facilitar o split
         self.clean_content = content.replace('\n', '').replace('\r', '')
         self.all_segments = self.clean_content.split("'")
         
-        # Lista que vai guardar CADA transação (Container) encontrada no arquivo
         self.transactions = []
         
         print(f"[PARSER LOG] Initializing parser. Total segments found: {len(self.all_segments)}")
@@ -89,16 +87,14 @@ class EdiParser:
                     if data['date'] == "N/A" or seg.startswith('DTM+203:'): 
                         data['date'] = self.parse_date(parts[1])
 
-            # TDT - Transporte e Navio
+            # TDT Transporte e Navio
             elif tag == 'TDT':
-                # Ex: TDT+20+551N+1++ALI...:::AMERICO VESPUCIO'
                 if len(parts) > 1:
                     mode = parts[1]
                     transport_name = ""
                     
-                    # Tenta pegar o nome do navio no final (Ex: ...:::AMERICO VESPUCIO)
                     last_part = parts[-1] 
-                    if '::' in last_part: # Formato comum :::NOME
+                    if '::' in last_part:
                         transport_name = last_part.split('::')[-1]
                     elif ':' in last_part and len(last_part) > 3: # Formato :146:NOME
                          transport_name = last_part.split(':')[-1]
@@ -124,15 +120,13 @@ class EdiParser:
             elif tag == 'EQA':
                 if len(parts) > 2: data['genset'] = f"{parts[1]}: {parts[2]}"
             
-            # RFF - Booking/Reference (CORRIGIDO)
             elif tag == 'RFF':
-                if len(parts) > 1 and parts[1]: # Garante que tem conteúdo
+                if len(parts) > 1 and parts[1]: 
                     ref_val = parts[1].split(':')
-                    if len(ref_val) > 1: # Garante que tem valor após o :
+                    if len(ref_val) > 1:
                         if ref_val[0] == 'BN': data['booking'] = ref_val[1]
                         elif ref_val[0] == 'VON': data['booking'] = f"Voyage: {ref_val[1]}"
                     elif ref_val[0] == 'BN': 
-                        # Caso RFF+BN' (sem valor), ignora ou marca como vazio
                         pass
 
             # MEA - Peso

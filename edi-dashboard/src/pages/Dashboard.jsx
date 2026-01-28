@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Table, Tag, Input, Button, Card, message, Select, Row, Col, Statistic, Switch, 
-  Descriptions, Divider, Tabs, Typography, Spin 
+  Descriptions, Divider, Tabs, Typography, Spin, Tooltip
 } from 'antd';
 import { 
   ReloadOutlined, SendOutlined, FileTextOutlined,
-  LoginOutlined, LogoutOutlined, ContainerOutlined, InfoCircleOutlined
+  LoginOutlined, LogoutOutlined, ContainerOutlined, InfoCircleOutlined,
+  CheckCircleOutlined, EyeOutlined, SyncOutlined, CloseCircleOutlined, WarningOutlined
 } from '@ant-design/icons';
 import MainLayout from '../components/MainLayout';
 import api from '../services/api';
@@ -15,9 +16,6 @@ const { Option } = Select;
 const { TabPane } = Tabs;
 const { Paragraph } = Typography;
 
-// ============================================================================
-// COMPONENTE 1: CONTEÚDO DA ABA DE DETALHES (LISTA DE CARDS)
-// ============================================================================
 const FileDetailContent = ({ profileName, fileId }) => {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
@@ -36,7 +34,6 @@ const FileDetailContent = ({ profileName, fileId }) => {
     fetchDetails();
   }, [profileName, fileId]);
 
-  // Função para ícones coloridos de Gate In/Out
   const renderFunction = (funcName) => {
     if (!funcName) return '-';
     const lower = funcName.toLowerCase();
@@ -58,9 +55,8 @@ const FileDetailContent = ({ profileName, fileId }) => {
   return (
     <Card bordered={false} style={{ minHeight: '100%' }}>
       <Tabs defaultActiveKey="1" type="card">
-        {/* ABA 1: Parsed Data */}
         <TabPane tab={`Parsed Data (${ediTransactions.length})`} key="1">
-          <div style={{ maxHeight: '650px', overflowY: 'auto', paddingRight: '5px' }}>
+          <div style={{ maxHeight: 'calc(100vh - 250px)', overflowY: 'auto', paddingRight: '5px' }}>
             
             {ediTransactions.map((tx, index) => (
               <Card 
@@ -86,7 +82,9 @@ const FileDetailContent = ({ profileName, fileId }) => {
                     <Descriptions.Item label="ISO">{tx.iso_code}</Descriptions.Item>
                     <Descriptions.Item label="Booking">{tx.booking}</Descriptions.Item>
                     <Descriptions.Item label="Transport">{tx.transport}</Descriptions.Item>
-                    
+                    {(tx.vgm && tx.vgm !== 'N/A') && (
+                      <Descriptions.Item label="VGM"><Tag color="gold">{tx.vgm}</Tag></Descriptions.Item>
+                    )}
                     {(tx.seals?.length > 0) && (
                       <Descriptions.Item label="Seals">
                         {tx.seals.map(s => <Tag key={s} color="purple">{s}</Tag>)}
@@ -107,7 +105,6 @@ const FileDetailContent = ({ profileName, fileId }) => {
           </div>
         </TabPane>
 
-        {/* ABA 2: Raw Content */}
         <TabPane tab="Raw EDI Content" key="2">
           <Paragraph>
             <pre style={{ background: '#f5f5f5', padding: 15, borderRadius: 5, fontSize: '11px', whiteSpace: 'pre-wrap', border: '1px solid #e0e0e0', maxHeight: '600px', overflowY: 'auto' }}>
@@ -120,14 +117,11 @@ const FileDetailContent = ({ profileName, fileId }) => {
   );
 };
 
-// ============================================================================
-// COMPONENTE 2: MONITORAMENTO (Tabela)
-// ============================================================================
 const MonitoringView = ({ onOpenFile }) => {
   const { t } = useLanguage();
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState([]);
-  const [stats, setStats] = useState({ pending: 0, sent: 0, failed: 0, duplicate: 0 });
+  const [stats, setStats] = useState({ pending: 0, sent: 0, failed: 0, duplicate: 0, monitored: 0 });
   const [profiles, setProfiles] = useState([]);
   const [selectedProfile, setSelectedProfile] = useState('');
   const [searchText, setSearchText] = useState('');
@@ -205,83 +199,109 @@ const MonitoringView = ({ onOpenFile }) => {
   };
 
   const columns = [
-    { title: 'ID', dataIndex: 'id', width: 60 },
+    { title: 'ID', dataIndex: 'id', width: 60, responsive: ['md'] },
     { 
       title: t('status'), 
       dataIndex: 'status', 
-      width: 100,
+      width: 130,
       render: status => {
-        let color = status === 'sent' ? 'success' : status === 'failed' ? 'error' : 'default';
-        if (status === 'pending') color = 'processing';
-        if (status === 'duplicate') color = 'warning';
-        return <Tag color={color}>{status ? status.toUpperCase() : 'UNKNOWN'}</Tag>;
+        let color = 'default';
+        let icon = null;
+        let text = status ? status.toUpperCase() : 'UNKNOWN';
+
+        if (status === 'sent') {
+            color = 'success';
+            icon = <CheckCircleOutlined />;
+        } else if (status === 'failed') {
+            color = 'error'; 
+            icon = <CloseCircleOutlined />;
+        } else if (status === 'pending') {
+            color = 'processing';
+            icon = <SyncOutlined spin />;
+        } else if (status === 'duplicate') {
+            color = 'warning'; 
+            icon = <WarningOutlined />;
+        } else if (status === 'monitored') {
+            color = 'cyan';
+            icon = <EyeOutlined />;
+            text = 'CAPTURED';
+        }
+
+        return (
+            <Tag color={color} icon={icon}>
+                {text}
+            </Tag>
+        );
       }
     },
-    { title: t('filename'), dataIndex: 'filename', width: 250, ellipsis: true },
-    { title: t('unit'), dataIndex: 'units', width: 150 },
-    { title: t('retries'), dataIndex: 'retries', width: 80, align: 'center' },
-    { title: t('added_at'), dataIndex: 'added_at', width: 160 },
-    { title: t('processed_at'), dataIndex: 'processed_at', width: 160 },
+    { title: t('filename'), dataIndex: 'filename', ellipsis: true },
+    { title: t('unit'), dataIndex: 'units', width: 150, responsive: ['sm'] },
+    { title: t('retries'), dataIndex: 'retries', width: 80, align: 'center', responsive: ['lg'] },
+    { title: t('added_at'), dataIndex: 'added_at', width: 160, responsive: ['xl'] },
+    { title: t('processed_at'), dataIndex: 'processed_at', width: 160, responsive: ['xl'] },
   ];
 
   return (
     <div>
-      <Card styles={{ body: { padding: '15px' } }} style={{ marginBottom: 20 }}>
-        <Row gutter={16} align="middle">
-          <Col span={5}>
+      <Card styles={{ body: { padding: '15px' } }} style={{ marginBottom: 16 }}>
+        <Row gutter={[16, 16]} align="middle">
+          <Col xs={24} md={10} lg={5}>
             <span style={{ marginRight: 10 }}>{t('profile')}:</span>
-            <Select value={selectedProfile} style={{ width: 180 }} onChange={setSelectedProfile} loading={profiles.length === 0}>
+            <Select value={selectedProfile} style={{ width: '100%', maxWidth: 200 }} onChange={setSelectedProfile} loading={profiles.length === 0}>
               {profiles.map(p => <Option key={p.name} value={p.name}>{p.name}</Option>)}
             </Select>
           </Col>
-          <Col span={7}>
+          <Col xs={24} md={14} lg={8}>
             <Input.Search 
               placeholder={t('search_placeholder')}
               onSearch={() => fetchQueueData()}
               onChange={e => setSearchText(e.target.value)}
               value={searchText}
               allowClear
+              enterButton
             />
           </Col>
-          <Col span={12} style={{ textAlign: 'right', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
+          <Col xs={24} lg={11} style={{ textAlign: 'right', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <Switch checkedChildren="Auto" unCheckedChildren="Manual" checked={autoRefresh} onChange={setAutoRefresh} />
             <Button icon={<ReloadOutlined />} onClick={() => { fetchQueueData(); fetchStats(); }}>{t('refresh')}</Button>
-            <Button type="primary" danger icon={<SendOutlined />} onClick={handleForceResend} disabled={selectedRowKeys.length === 0}>
-              {t('force_resend')} ({selectedRowKeys.length})
-            </Button>
+            <Tooltip title="Forces send to destination (activates Sender mode temporarily)">
+                <Button type="primary" danger icon={<SendOutlined />} onClick={handleForceResend} disabled={selectedRowKeys.length === 0}>
+                {t('force_resend')} ({selectedRowKeys.length})
+                </Button>
+            </Tooltip>
           </Col>
         </Row>
       </Card>
 
-      <Row gutter={16} style={{ marginBottom: 20 }}>
-        <Col span={6}><Card><Statistic title={t('queue_pending')} value={stats.pending} styles={{ content: { color: '#1890ff' } }} /></Card></Col>
-        <Col span={6}><Card><Statistic title={t('sent_success')} value={stats.sent} styles={{ content: { color: '#3f8600' } }} /></Card></Col>
-        <Col span={6}><Card><Statistic title={t('failed')} value={stats.failed} styles={{ content: { color: '#cf1322' } }} /></Card></Col>
-        <Col span={6}><Card><Statistic title={t('duplicates')} value={stats.duplicate} styles={{ content: { color: '#faad14' } }} /></Card></Col>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={12} sm={12} md={4}><Card size="small"><Statistic title="Pending" value={stats.pending} valueStyle={{ color: '#1890ff', fontSize: '1.1rem' }} /></Card></Col>
+        <Col xs={12} sm={12} md={5}><Card size="small"><Statistic title="Sent (SFTP/Local)" value={stats.sent} prefix={<CheckCircleOutlined />} valueStyle={{ color: '#3f8600', fontSize: '1.1rem' }} /></Card></Col>
+        <Col xs={12} sm={12} md={5}><Card size="small"><Statistic title="Captured (Monitored)" value={stats.monitored || 0} prefix={<EyeOutlined />} valueStyle={{ color: '#13c2c2', fontSize: '1.1rem' }} /></Card></Col>
+        <Col xs={12} sm={12} md={5}><Card size="small"><Statistic title="Duplicates" value={stats.duplicate} valueStyle={{ color: '#faad14', fontSize: '1.1rem' }} /></Card></Col>
+        <Col xs={12} sm={12} md={5}><Card size="small"><Statistic title="Failed" value={stats.failed} valueStyle={{ color: '#cf1322', fontSize: '1.1rem' }} /></Card></Col>
       </Row>
 
-      <Table 
-        columns={columns} 
-        dataSource={data} 
-        rowKey="id" 
-        loading={loading} 
-        size="small" 
-        pagination={{ pageSize: 15 }} 
-        rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }} 
-        bordered 
-        scroll={{ y: 500 }}
-        onRow={(record) => ({
-          onClick: () => onOpenFile(record, selectedProfile),
-          style: { cursor: 'pointer' }
-        })}
-      />
+      <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #f0f0f0' }}>
+        <Table 
+            columns={columns} 
+            dataSource={data} 
+            rowKey="id" 
+            loading={loading} 
+            size="small" 
+            pagination={{ pageSize: 20, showSizeChanger: false }} 
+            rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }} 
+            bordered 
+            scroll={{ y: 'calc(100vh - 380px)', x: 'max-content' }}
+            onRow={(record) => ({
+            onClick: () => onOpenFile(record, selectedProfile),
+            style: { cursor: 'pointer' }
+            })}
+        />
+      </div>
     </div>
   );
 };
 
-// ============================================================================
-// COMPONENTE PRINCIPAL: DASHBOARD
-// ============================================================================
 const Dashboard = () => {
   const { t } = useLanguage();
   const [activeKey, setActiveKey] = useState('monitoring');

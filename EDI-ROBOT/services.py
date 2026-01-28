@@ -13,6 +13,7 @@ from datetime import datetime, date, timedelta
 import data_manager
 import logger_setup
 import alert_manager
+import edi_parser # Importar o parser novo
 
 class BaseWatcher(Thread):
     def __init__(self, profile_config, stop_event, logger, alert_manager):
@@ -60,22 +61,53 @@ class BaseProcessor(Thread):
     def run(self):
         db_path = self.config['settings']['db_path']
         self.logger.info("File processor started.")
+        
+        # Config Auto-Resend
+        auto_resend = self.config.get("auto_resend", {})
+        auto_resend_enabled = auto_resend.get("enabled", False)
+        auto_resend_interval = auto_resend.get("interval_minutes", 60)
+        last_auto_check = 0
+
         while not self.stop_event.is_set():
             try:
+                # 1. Processa Pendentes
                 pending_files = data_manager.get_pending_files(db_path)
+                if pending_files:
+                    for record_id, file_path, retry_count, original_path in pending_files:
+                        if self.stop_event.is_set(): break
+                        self._process_file(record_id, file_path, retry_count, original_path)
+                
+                # 2. Check Auto-Resend (Evita spam, roda a cada 1 minuto)
+                if auto_resend_enabled and (time.time() - last_auto_check > 60):
+                    self._check_auto_resend(db_path, int(auto_resend_interval))
+                    last_auto_check = time.time()
+
                 if not pending_files:
                     self.stop_event.wait(5)
-                    continue
-                for record_id, file_path, retry_count in pending_files:
-                    if self.stop_event.is_set(): break
-                    self._process_file(record_id, file_path, retry_count)
+
             except Exception as e:
                 self.logger.error(f"Critical error in processor loop: {e}", exc_info=True)
                 self.stop_event.wait(10)
         self.logger.info("File processor stopped.")
 
-    def _process_file(self, record_id, file_path, retry_count):
+    def _process_file(self, record_id, file_path, retry_count, original_path):
         raise NotImplementedError("Each processor must implement its own _process_file method.")
+
+    def _check_auto_resend(self, db_path, interval):
+        """Verifica arquivos antigos para reenviar."""
+        try:
+            resend_list = data_manager.get_files_for_auto_resend(db_path, interval)
+            for item in resend_list:
+                rid, fpath, opath, status = item
+                # Reutiliza lógica de processamento, mas força modo sender
+                self.logger.info(f"[AUTO-RESEND] Triggering resend for file ID {rid}")
+                # Passa retry_count=-1 para forçar o envio (lógica do override)
+                self._process_file(rid, fpath, -1, opath)
+                
+                # Atualiza timestamp para não reenviar imediatamente
+                data_manager.update_file_status(db_path, rid, 'sent', update_resend_time=True)
+        except Exception as e:
+            self.logger.error(f"Auto-resend check failed: {e}")
 
     def _calculate_hash(self, file_path):
         sha256_hash = hashlib.sha256()
@@ -113,7 +145,7 @@ class LocalWatcher(BaseWatcher):
                         
                         mod_date = date.fromtimestamp(entry.stat().st_mtime)
                         if date_limit is None or mod_date >= date_limit:
-                            data_manager.add_file_to_queue(db_path, entry.path, status='pending')
+                            data_manager.add_file_to_queue(db_path, entry.path, status='pending', original_path=entry.path)
                             self.logger.info(f"New file '{entry.name}' added to queue.")
             except Exception as e:
                 self.logger.error(f"Error in local watcher: {e}", exc_info=True)
@@ -181,10 +213,13 @@ class FileProcessor(BaseProcessor):
     def _extract_and_index_containers(self, record_id, file_path):
         db_path = self.config['settings']['db_path']
         try:
-            with open(file_path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
             
-            containers = re.findall(r'[A-Z]{4}[0-9]{7}', content)
+            # Usa o novo parser SMDG robusto
+            parser = edi_parser.EdiParser(content)
+            containers = [t.get('container') for t in parser.transactions if t.get('container')]
+            
             if containers:
                 data_manager.add_containers_to_index(db_path, record_id, containers)
                 self.logger.info(f"Indexed {len(set(containers))} units for file ID {record_id}.")
@@ -205,14 +240,18 @@ class FileProcessor(BaseProcessor):
                 filename = os.path.basename(file_path)
                 backup_dest = os.path.join(backup_dir, filename)
                 
-                shutil.copy2(file_path, backup_dest)
-                self.logger.info(f"Backup created successfully for '{filename}' in '{backup_dir}'")
+                # Só copia se não existir (evita IO desnecessário)
+                if not os.path.exists(backup_dest):
+                    shutil.copy2(file_path, backup_dest)
+                    self.logger.info(f"Backup created: {filename}")
             except Exception as e:
                 self.logger.warning(f"Failed to create backup for '{file_path}': {e}")
 
-    def _resolve_missing_file(self, original_path):
-        filename = os.path.basename(original_path)
+    def _resolve_missing_file(self, original_path, file_path):
+        """Tenta encontrar o arquivo no Backup ou Destino se sumiu da origem."""
+        filename = os.path.basename(original_path or file_path or "unknown")
         
+        # 1. Tenta Backup
         backup_cfg = self.config['settings'].get('backup', {})
         if backup_cfg.get('enabled') and backup_cfg.get('path'):
             backup_path = os.path.join(backup_cfg['path'].strip().replace('"', ''), filename)
@@ -220,6 +259,7 @@ class FileProcessor(BaseProcessor):
                 self.logger.info(f"Recovered missing file from backup: {backup_path}")
                 return backup_path
 
+        # 2. Tenta Destino Local (se aplicável)
         dest_cfg = self.config.get('destination', {})
         if dest_cfg.get('type') == 'local':
             dest_path = os.path.join(dest_cfg.get('path', ''), filename)
@@ -229,54 +269,66 @@ class FileProcessor(BaseProcessor):
         
         return None
 
-    def _process_file(self, record_id, file_path, retry_count):
+    def _process_file(self, record_id, file_path, retry_count, original_path):
         db_path = self.config['settings']['db_path']
         action = self.config.get('action', 'copy')
         dest_cfg = self.config.get('destination', {})
         dest_type = dest_cfg.get('type', 'local')
+        mode = self.config.get('mode', 'sender') # Novo: Sender vs Visualizer
         
-        filename = os.path.basename(file_path or "N/A")
+        # Usa original_path se disponível (para lógica de reenvio/queue)
+        current_path = original_path if (original_path and os.path.exists(original_path)) else file_path
+        filename = os.path.basename(current_path or "N/A")
         profile_name = self.config['name']
         is_recovered_file = False
 
         try:
-            if not os.path.exists(file_path):
-                recovered_path = self._resolve_missing_file(file_path)
+            # Recuperação de arquivo perdido
+            if not os.path.exists(current_path):
+                recovered_path = self._resolve_missing_file(original_path, file_path)
                 if recovered_path:
-                    file_path = recovered_path
+                    current_path = recovered_path
                     is_recovered_file = True
                 else:
-                    raise FileNotFoundError(f"File to process not found at path: {file_path}")
+                    raise FileNotFoundError(f"File to process not found at source, backup or dest: {filename}")
 
-            file_hash = self._calculate_hash(file_path)
+            file_hash = self._calculate_hash(current_path)
+            
+            # -1 indica override manual (Forçar Envio)
             is_forced = (retry_count == -1)
 
+            # Verifica duplicata se não for forçado
             if not is_forced and data_manager.hash_exists(db_path, file_hash):
-                self.logger.warning(f"Duplicate file detected by hash: {filename}. Marking as duplicate.")
+                self.logger.warning(f"Duplicate file detected: {filename}. Marking as duplicate.")
                 data_manager.update_file_status(db_path, record_id, 'duplicate', file_hash=file_hash)
-                self.alert_manager.send(
-                    "WARNING",
-                    f"Duplicate File - Profile: {profile_name}",
-                    f"File '{filename}' was detected as duplicate and will not be processed."
-                )
                 return
 
-            self._extract_and_index_containers(record_id, file_path)
+            self._extract_and_index_containers(record_id, current_path)
 
-            if dest_type == 'local':
-                self._handle_local_destination(record_id, file_path, file_hash)
-            elif dest_type == 'SFTP':
-                self._handle_sftp_destination(record_id, file_path, file_hash)
+            effective_mode = 'sender' if is_forced else mode
+            
+            if effective_mode == 'visualizer':
+                # Só backup e marca como monitorado
+                if not is_recovered_file: self._handle_backup(current_path)
+                data_manager.update_file_status(db_path, record_id, 'monitored', file_hash=file_hash)
+                self.logger.info(f"File {filename} monitored (Visualizer Mode).")
+            
             else:
-                raise NotImplementedError(f"Destination type '{dest_type}' is not supported.")
+                # Modo Sender (envia)
+                if dest_type == 'local':
+                    self._handle_local_destination(record_id, current_path, file_hash, is_forced)
+                elif dest_type == 'SFTP':
+                    self._handle_sftp_destination(record_id, current_path, file_hash)
+                else:
+                    raise NotImplementedError(f"Destination type '{dest_type}' is not supported.")
 
-            if not is_recovered_file or (is_recovered_file and "backup" not in file_path.lower()):
-                 self._handle_backup(file_path)
+                # Backup sempre (se sender)
+                if not is_recovered_file: self._handle_backup(current_path)
 
-            if action == 'move':
-                if not is_recovered_file:
+                # Ação Pós-Envio (Move) - Só se não for recuperado/backup
+                if action == 'move' and not is_recovered_file and not is_forced:
                     try:
-                        os.remove(file_path)
+                        os.remove(current_path)
                     except Exception as e:
                         self.logger.warning(f"Could not remove source file after move: {e}")
 
@@ -284,73 +336,48 @@ class FileProcessor(BaseProcessor):
             self.logger.error(f"Failed to process file ID {record_id} ({filename}): {e}", exc_info=True)
             
             new_retry = 0 if retry_count < 0 else retry_count + 1
-            
             if new_retry >= 5:
                 data_manager.update_file_status(db_path, record_id, 'failed', increment_retry=True)
-                self.alert_manager.send(
-                    "CRITICAL",
-                    f"Permanent File Failure - Profile: {profile_name}",
-                    f"File '{filename}' failed processing 5 times. Last Error: {e}"
-                )
+                self.alert_manager.send("CRITICAL", f"File Failure - {profile_name}", f"File '{filename}' failed 5 times. Error: {e}")
             else:
                 data_manager.update_file_status(db_path, record_id, 'pending', increment_retry=True)
-                self.alert_manager.send(
-                    "WARNING",
-                    f"Processing Failure - Profile: {profile_name}",
-                    f"File '{filename}' failed (Attempt {new_retry}/5). Error: {e}"
-                )
 
-    def _handle_local_destination(self, record_id, file_path, file_hash):
+    def _handle_local_destination(self, record_id, file_path, file_hash, is_forced):
         db_path = self.config['settings']['db_path']
-        action = self.config.get('action', 'copy')
         dest_dir = self.config['destination']['path']
+        action = self.config.get('action', 'copy')
         filename = os.path.basename(file_path)
         
-        if not os.path.isdir(dest_dir):
-            os.makedirs(dest_dir, exist_ok=True)
-            
+        if not os.path.isdir(dest_dir): os.makedirs(dest_dir, exist_ok=True)
         dest_path = os.path.join(dest_dir, filename)
 
-        if os.path.abspath(file_path) != os.path.abspath(dest_path):
+        # Se forçado ou copy, usa copy2. Se move, usa move.
+        if action == 'move' and not is_forced:
+            shutil.move(file_path, dest_path)
+        else:
             shutil.copy2(file_path, dest_path)
         
-        self.logger.info(f"File ID {record_id} successfully processed to local destination.")
+        self.logger.info(f"File ID {record_id} processed to local dest.")
         data_manager.update_file_status(db_path, record_id, 'sent', file_hash=file_hash)
-        
-        self.alert_manager.send(
-            "INFO",
-            f"File Processed - Profile: {self.config['name']}",
-            f"File '{filename}' processed successfully to local destination: {dest_dir}"
-        )
 
     def _handle_sftp_destination(self, record_id, file_path, file_hash):
         db_path = self.config['settings']['db_path']
         dest_cfg = self.config['destination']
-        host = dest_cfg.get('host')
-        username = dest_cfg.get('username')
+        host, username = dest_cfg.get('host'), dest_cfg.get('username')
         remote_path = dest_cfg.get('remote_path', '/')
         filename = os.path.basename(file_path)
         
         password = keyring.get_password(f"robot_automator::{host}", username)
-        if not password:
-            raise ValueError(f"Password for {username}@{host} not found in keyring.")
+        if not password: raise ValueError(f"Password for {username}@{host} not found.")
 
-        cnopts = pysftp.CnOpts()
-        cnopts.hostkeys = None
-
+        cnopts = pysftp.CnOpts(); cnopts.hostkeys = None
         with pysftp.Connection(host, username=username, password=password, port=dest_cfg.get('port', 22), cnopts=cnopts) as sftp:
             sftp.cwd(remote_path)
-            remote_dest_path = f"{remote_path}/{filename}".replace("//", "/")
-            sftp.put(file_path, remote_dest_path)
+            remote_dest = f"{remote_path}/{filename}".replace("//", "/")
+            sftp.put(file_path, remote_dest)
         
-        self.logger.info(f"File ID {record_id} successfully uploaded to SFTP destination.")
+        self.logger.info(f"File ID {record_id} uploaded to SFTP.")
         data_manager.update_file_status(db_path, record_id, 'sent', file_hash=file_hash)
-
-        self.alert_manager.send(
-            "INFO",
-            f"File Sent (SFTP) - Profile: {self.config['name']}",
-            f"File '{filename}' sent successfully to sftp://{username}@{host}{remote_dest_path}"
-        )
 
 class ServiceManager:
     def __init__(self, profile_config, main_log_queue):
@@ -361,53 +388,35 @@ class ServiceManager:
             self.profile_config['settings']['log_path'], 
             main_log_queue
         )
-        
         alert_cfg = self.profile_config.get('settings', {}).get('alerting', {})
         self.alert_manager = alert_manager.TeamsAlertManager(alert_cfg, self.logger)
 
     def start(self):
-        if self.is_running():
-            self.logger.warning("Attempted to start services that are already running.")
-            return
-        
+        if self.is_running(): return
         self.logger.info("Starting services...")
         self.stop_event.clear()
-        
-        db_path = self.profile_config['settings']['db_path']
-        data_manager.initialize_database(db_path)
+        data_manager.initialize_database(self.profile_config['settings']['db_path'])
         
         self.runner_thread = ProfileRunner(
-            self.profile_config, 
-            self.stop_event, 
-            self.logger, 
-            self.alert_manager
+            self.profile_config, self.stop_event, self.logger, self.alert_manager
         )
         self.runner_thread.start()
-        self.logger.info("Services started successfully.")
+        self.logger.info("Services started.")
 
     def stop(self):
-        if not self.is_running():
-            return
-        
+        if not self.is_running(): return
         self.logger.info("Stopping services...")
         self.stop_event.set()
-        if self.runner_thread:
-            self.runner_thread.join(timeout=10) 
+        if self.runner_thread: self.runner_thread.join(timeout=10)
         self.runner_thread = None
-        self.logger.info("Services stopped successfully.")
+        self.logger.info("Services stopped.")
 
     def is_running(self):
         return self.runner_thread and self.runner_thread.is_alive()
 
 class ProfileRunner(Thread):
-    WATCHER_MAPPING = {
-        'local': LocalWatcher,
-        'SFTP': SftpWatcher,
-    }
-    PROCESSOR_MAPPING = {
-        'local': FileProcessor,
-        'SFTP': FileProcessor,
-    }
+    WATCHER_MAPPING = {'local': LocalWatcher, 'SFTP': SftpWatcher}
+    PROCESSOR_MAPPING = {'local': FileProcessor, 'SFTP': FileProcessor}
 
     def __init__(self, profile_config, stop_event, logger, alert_manager):
         super().__init__()
@@ -419,15 +428,11 @@ class ProfileRunner(Thread):
 
     def run(self):
         source_type = self.config['source']['type']
-        
         WatcherClass = self.WATCHER_MAPPING.get(source_type)
         ProcessorClass = self.PROCESSOR_MAPPING.get(self.config['destination']['type'])
 
-        if not WatcherClass:
-            self.logger.error(f"No watcher found for source type '{source_type}'. Stopping profile.")
-            return
-        if not ProcessorClass:
-            self.logger.error(f"No processor found for destination type '{self.config['destination']['type']}'. Stopping profile.")
+        if not WatcherClass or not ProcessorClass:
+            self.logger.error("Invalid Source/Dest type config.")
             return
 
         watcher = WatcherClass(self.config, self.stop_event, self.logger, self.alert_manager)
@@ -435,21 +440,14 @@ class ProfileRunner(Thread):
 
         watcher.start()
         processor.start()
-        
-        self.logger.info(f"Profile '{self.config['name']}' is now running.")
+        self.logger.info(f"Profile '{self.config['name']}' threads running.")
 
         while not self.stop_event.is_set():
             if not watcher.is_alive() or not processor.is_alive():
-                self.logger.error("A critical thread has died. Stopping profile.")
-                thread_name = "Watcher" if not watcher.is_alive() else "Processor"
-                self.alert_manager.send(
-                    "CRITICAL",
-                    f"Thread Crash - Profile: {self.config['name']}",
-                    f"Critical thread '{thread_name}' died unexpectedly. Profile '{self.config['name']}' will be restarted."
-                )
+                self.logger.error("Critical thread died. Restarting profile...")
                 self.stop_event.set()
-            self.stop_event.wait(5)
+                self.stop_event.wait(5)
+            self.stop_event.wait(2)
         
         watcher.join()
         processor.join()
-        self.logger.info(f"Profile '{self.config['name']}' has been stopped.")
