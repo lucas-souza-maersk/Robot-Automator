@@ -1,9 +1,0 @@
-pystray
-Pillow
-psutil
-pysftp==0.2.9
-keyring
-paramiko<3.0
-requests
-fastapi
-uvicorn

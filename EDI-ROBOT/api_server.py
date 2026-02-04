@@ -8,6 +8,7 @@ import traceback
 import socket
 import paramiko
 import warnings
+import re # Importado para Regex
 import edi_parser
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends, status
@@ -26,7 +27,7 @@ import auth_utils
 
 user_db.init_user_db()
 
-app = FastAPI(title="EDI Robot Dashboard API", version="3.4.0 (Fix RFF Error)")
+app = FastAPI(title="EDI Robot Dashboard API", version="3.5.0 (Smart Search)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -145,19 +146,45 @@ def save_profiles(config: ProfileConfigModel, current_user: dict = Depends(get_c
     return {"status": "success"}
 
 @app.get("/queue/{profile_name}")
-def get_profile_queue(profile_name: str, limit: int = 100, search: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+def get_profile_queue(
+    profile_name: str, 
+    limit: int = 100, 
+    search: Optional[str] = None, 
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
     profiles = config_manager.load_profiles()
     if profile_name not in profiles: raise HTTPException(status_code=404, detail="Profile not found")
     db_path = profiles[profile_name].get("settings", {}).get("db_path")
     if not db_path or not os.path.exists(db_path): raise HTTPException(status_code=404, detail="Database not found")
 
     try:
-        items = data_manager.get_all_queue_items(db_path, container_filter=None)
+        container_filter = None
+        
+        if search:
+            regex = r"[A-Z]{4}\d{7}"
+            found_containers = re.findall(regex, search.upper())
+            if found_containers:
+                container_filter = found_containers
+        
+        items = data_manager.get_all_queue_items(
+            db_path, 
+            container_filter=container_filter, 
+            date_start=date_start, 
+            date_end=date_end,
+            limit=limit
+        )
+        
         formatted_items = []
         for item in items:
+            # item[8] = units
+            # item[9] = event_date
             f_name = os.path.basename(item[3] or item[7] or "N/A")
             units = item[8] or ""
-            if search:
+            e_date = item[9] # Pode ser None
+            
+            if search and not container_filter:
                 search_terms = [t.strip().lower() for t in search.split(',')]
                 match = False
                 for term in search_terms:
@@ -168,12 +195,20 @@ def get_profile_queue(profile_name: str, limit: int = 100, search: Optional[str]
                 if not match: continue
             
             formatted_items.append({
-                "id": item[0], "status": item[1], "retries": item[2], "filename": f_name,
-                "hash": item[4], "added_at": item[5], "processed_at": item[6], "units": item[8]
+                "id": item[0], 
+                "status": item[1], 
+                "retries": item[2], 
+                "filename": f_name,
+                "hash": item[4], 
+                "added_at": item[5], 
+                "processed_at": item[6], 
+                "units": units,
+                "event_date": e_date # Enviando pro front
             })
-            if len(formatted_items) >= limit: break
+            
         return formatted_items
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.get("/stats/{profile_name}")
@@ -235,6 +270,67 @@ def browse_sftp(request: SftpBrowseRequest, current_user: dict = Depends(get_cur
         return sorted(items, key=lambda x: x["name"])
     except Exception as e: raise HTTPException(500, str(e))
     finally: ssh.close()
+
+@app.get("/queue/{profile_name}")
+def get_profile_queue(
+    profile_name: str, 
+    limit: int = 100, 
+    search: Optional[str] = None, 
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    profiles = config_manager.load_profiles()
+    if profile_name not in profiles: raise HTTPException(status_code=404, detail="Profile not found")
+    db_path = profiles[profile_name].get("settings", {}).get("db_path")
+    if not db_path or not os.path.exists(db_path): raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        container_filter = None
+        
+        # Lógica de Smart Search com Regex
+        if search:
+            regex = r"[A-Z]{4}\d{7}"
+            found_containers = re.findall(regex, search.upper())
+            if found_containers:
+                container_filter = found_containers
+        
+        # AQUI MUDOU: Passamos o limite para o DB
+        items = data_manager.get_all_queue_items(
+            db_path, 
+            container_filter=container_filter, 
+            date_start=date_start, 
+            date_end=date_end,
+            limit=limit # <--- Otimização aqui
+        )
+        
+        formatted_items = []
+        for item in items:
+            f_name = os.path.basename(item[3] or item[7] or "N/A")
+            units = item[8] or ""
+            
+            # Filtro de texto secundário em memória (apenas para os 100 itens retornados, super rápido)
+            if search and not container_filter:
+                search_terms = [t.strip().lower() for t in search.split(',')]
+                match = False
+                for term in search_terms:
+                    if not term: continue
+                    if (term in f_name.lower()) or (term in units.lower()):
+                        match = True
+                        break
+                if not match: continue
+            
+            formatted_items.append({
+                "id": item[0], "status": item[1], "retries": item[2], "filename": f_name,
+                "hash": item[4], "added_at": item[5], "processed_at": item[6], "units": item[8]
+            })
+            
+            # Removemos o break manual pois o SQL já limitou
+        
+        return formatted_items
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 # --- ROTA DE DETALHES INTELIGENTE ---
 @app.get("/queue/{profile_name}/file/{file_id}")
@@ -310,5 +406,5 @@ def get_file_details_api(profile_name: str, file_id: int, current_user: dict = D
 
 if __name__ == "__main__":
     import uvicorn
-    print("Starting API Server v3.4.0 (Robust)...")
+    print("Starting API Server v3.5.0 (Smart Search & Dates)...")
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
+from system_settings_ui import SystemSettingsDialog
 import queue
 import logging
 import os
@@ -11,10 +12,12 @@ from PIL import Image
 import pystray
 import psutil
 
+# --- SEUS MODULOS ---
 import config_manager
 import logger_setup
 import data_manager
 from profile_editor import ProfileEditor
+from auth_manager import AuthManager # <--- 1. IMPORTAMOS O GERENTE DE AUTH
 
 def resource_path(relative_path):
     try:
@@ -22,6 +25,103 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+# --- NOVA CLASSE DE LOGIN (ADICIONADA) ---
+class LoginWindow(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Login - Robo Automator")
+        self.geometry("400x350")
+        self.resizable(False, False)
+        self.is_authenticated = False # Flag para controlar se logou
+
+        # Tenta carregar icone
+        try:
+            self.icon_path = resource_path("apm.ico")
+            self.iconbitmap(self.icon_path)
+        except:
+            pass
+
+        # Centraliza na tela
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        x = (screen_width // 2) - (200)
+        y = (screen_height // 2) - (175)
+        self.geometry(f"+{x}+{y}")
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Container principal
+        frame = ttk.Frame(self, padding=30)
+        frame.pack(expand=True, fill="both")
+
+        # Titulo
+        ttk.Label(frame, text="Autenticação", font=("Segoe UI", 16, "bold")).pack(pady=(0, 20))
+
+        # Campo Usuario
+        ttk.Label(frame, text="Usuário:", font=("Segoe UI", 10)).pack(anchor="w")
+        self.entry_user = ttk.Entry(frame, font=("Segoe UI", 10))
+        self.entry_user.pack(fill="x", pady=(5, 15))
+        self.entry_user.insert(0, "Admin") # Facilita testes, pode remover depois
+
+        # Campo Senha
+        ttk.Label(frame, text="Senha:", font=("Segoe UI", 10)).pack(anchor="w")
+        self.entry_pass = ttk.Entry(frame, font=("Segoe UI", 10), show="*")
+        self.entry_pass.pack(fill="x", pady=(5, 20))
+        
+        # Bind do Enter para logar
+        self.entry_pass.bind('<Return>', lambda e: self.do_login())
+
+        # Botao Entrar
+        self.btn_login = ttk.Button(frame, text="ENTRAR", command=self.do_login, style="Accent.TButton")
+        self.btn_login.pack(fill="x", ipady=5)
+
+        # Status
+        self.lbl_status = ttk.Label(frame, text="", foreground="red", font=("Segoe UI", 9))
+        self.lbl_status.pack(pady=10)
+
+        # Copyright
+        ttk.Label(frame, text="APM Terminals Pecém", font=("Segoe UI", 8), foreground="gray").pack(side="bottom")
+
+    def do_login(self):
+        username = self.entry_user.get()
+        password = self.entry_pass.get()
+
+        if not username or not password:
+            self.lbl_status.config(text="Preencha todos os campos.", foreground="red")
+            return
+
+        self.lbl_status.config(text="Verificando credenciais...", foreground="blue")
+        self.update() # Força atualizar a tela
+
+        # --- AQUI ESTA A MAGICA DA INTEGRACAO ---
+        try:
+            # 1. Carrega configuracoes (para saber se é N4 ou Banco)
+            settings = config_manager.load_system_settings() # Certifique-se que essa funcao existe ou carregue json manual
+            if not settings: 
+                # Fallback se a funcao load_system_settings nao existir ainda no seu config_manager
+                if os.path.exists('config.json'):
+                    with open('config.json', 'r') as f: settings = json.load(f)
+                else:
+                    settings = {} 
+
+            # 2. Inicializa o AuthManager
+            auth = AuthManager(settings)
+
+            # 3. Tenta autenticar
+            if auth.login(username, password):
+                self.lbl_status.config(text="Sucesso!", foreground="green")
+                self.is_authenticated = True
+                self.destroy() # Fecha a janela de login para abrir a principal
+            else:
+                self.lbl_status.config(text="Login falhou. Verifique as credenciais.", foreground="red")
+        
+        except Exception as e:
+            self.lbl_status.config(text=f"Erro no sistema: {str(e)}", foreground="red")
+            logging.error(f"Erro de login: {e}")
+
+# --- CLASSES EXISTENTES (NÃO ALTERADAS) ---
 
 class FileViewerDialog(tk.Toplevel):
     def __init__(self, parent, file_path, highlight_text=None):
@@ -172,6 +272,9 @@ class MainApplication(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing) 
         self.setup_system_tray()
         logging.info("Configuration Application Initialized.")
+
+    def open_system_settings(self):
+        SystemSettingsDialog(self)
 
     def on_closing(self):
         CustomClosingDialog(self)
@@ -450,6 +553,9 @@ class MainApplication(tk.Tk):
         about_frame = ttk.LabelFrame(right_frame, text="About", padding=10)
         about_frame.pack(fill='x', pady=(20, 5), side='bottom') 
         ttk.Label(about_frame, text="Robo Automator V2.5\nDeveloped by Lucas Melo\nFor APM Terminals Pecém", justify=tk.CENTER).pack()
+        ttk.Separator(right_frame, orient='horizontal').pack(fill='x', pady=15)
+        btn_sys = ttk.Button(right_frame, text="Configurações de Sistema / Auth", command=self.open_system_settings)
+        btn_sys.pack(fill='x', pady=5)
 
     def update_profile_listbox(self):
         self.profile_listbox.delete(0, tk.END)
@@ -578,10 +684,18 @@ class MainApplication(tk.Tk):
             if self.winfo_exists():
                 self.after(100, self.process_log_queue)
 
+# --- FLUXO PRINCIPAL MODIFICADO ---
 if __name__ == "__main__":
     try:
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)
     except: pass
-    app = MainApplication()
-    app.mainloop()
+    
+    # 1. Abre a tela de Login primeiro
+    login_app = LoginWindow()
+    login_app.mainloop()
+
+    # 2. Só abre o App Principal se a flag is_authenticated for True
+    if login_app.is_authenticated:
+        app = MainApplication()
+        app.mainloop()

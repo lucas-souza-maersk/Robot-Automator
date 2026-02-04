@@ -13,7 +13,36 @@ from datetime import datetime, date, timedelta
 import data_manager
 import logger_setup
 import alert_manager
-import edi_parser # Importar o parser novo
+import edi_parser 
+
+# --- FUNÇÃO AUXILIAR NOVA ---
+def _extract_event_date(file_path):
+    """
+    Lê o arquivo, usa o EDI Parser para achar a data da transação
+    e retorna no formato SQL (YYYY-MM-DD HH:MM:SS) ou None.
+    """
+    try:
+        # Se arquivo vazio ou inexistente, aborta
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            return None
+
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+            parser = edi_parser.EdiParser(content)
+            
+            # Pega a data da primeira transação encontrada
+            if parser.transactions:
+                raw_date = parser.transactions[0].get('date') # Ex: "28/01/2026 13:34"
+                if raw_date:
+                    try:
+                        # Tenta converter o formato DD/MM/YYYY HH:MM para SQL
+                        dt_obj = datetime.strptime(raw_date, '%d/%m/%Y %H:%M')
+                        return dt_obj.strftime('%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        pass # Formato inesperado, retorna None
+    except Exception:
+        pass # Qualquer erro de leitura (permissão, encoding)
+    return None
 
 class BaseWatcher(Thread):
     def __init__(self, profile_config, stop_event, logger, alert_manager):
@@ -145,7 +174,17 @@ class LocalWatcher(BaseWatcher):
                         
                         mod_date = date.fromtimestamp(entry.stat().st_mtime)
                         if date_limit is None or mod_date >= date_limit:
-                            data_manager.add_file_to_queue(db_path, entry.path, status='pending', original_path=entry.path)
+                            
+                            # AQUI A MUDANÇA: Lê a data do evento antes de salvar
+                            event_date = _extract_event_date(entry.path)
+
+                            data_manager.add_file_to_queue(
+                                db_path, 
+                                entry.path, 
+                                status='pending', 
+                                original_path=entry.path,
+                                event_date=event_date # Passa a data extraída
+                            )
                             self.logger.info(f"New file '{entry.name}' added to queue.")
             except Exception as e:
                 self.logger.error(f"Error in local watcher: {e}", exc_info=True)
@@ -195,7 +234,16 @@ class SftpWatcher(BaseWatcher):
                             self.logger.info(f"Downloading new file: {attr.filename}")
                             sftp.get(attr.filename, local_dest_path)
                             
-                            data_manager.add_file_to_queue(db_path, local_dest_path, status='pending', original_path=remote_filepath)
+                            # AQUI A MUDANÇA: Lê a data do evento do arquivo baixado
+                            event_date = _extract_event_date(local_dest_path)
+
+                            data_manager.add_file_to_queue(
+                                db_path, 
+                                local_dest_path, 
+                                status='pending', 
+                                original_path=remote_filepath,
+                                event_date=event_date # Passa a data extraída
+                            )
                             self.logger.info(f"File '{attr.filename}' added to queue.")
 
             except Exception as e:
